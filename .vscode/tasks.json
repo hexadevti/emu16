@@ -1,0 +1,85 @@
+{
+  // emu16 build tasks.
+  //   * "P4: Build" / "P4: Build & Upload" -> PicoCalc + Waveshare ESP32-P4-WIFI6 (arduino-cli), COM9
+  //   * "desktop: build" / "desktop: run"   -> SDL2 debug build (CMake, MSYS2 MinGW32)
+  //
+  // The P4 tasks use the same isolated arduino-cli data directory as emu8 (~/.emu6502-p4), which
+  // holds Arduino-ESP32 3.x for the P4. Build output goes to ~/.emu16-p4-build (outside the repo:
+  // the deep core tree would overrun the Windows 260-character path limit).
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "P4: Build",
+      "type": "shell",
+      "command": "arduino-cli",
+      "args": [
+        "compile",
+        "--fqbn",
+        "esp32:esp32:esp32p4:PSRAM=enabled,FlashSize=16M,ChipVariant=postv3,PartitionScheme=huge_app,DebugLevel=error",
+        "--build-property",
+        "compiler.optimization_flags=-O2",
+        "--build-property",
+        "compiler.cpp.extra_flags=-DBOARD_PICOCALC_P4",
+        "--build-path",
+        "${userHome}/.emu16-p4-build",
+        "${workspaceFolder}/emu16"
+      ],
+      "options": {
+        "env": {
+          "ARDUINO_DIRECTORIES_DATA": "${userHome}/.emu6502-p4/data",
+          "ARDUINO_DIRECTORIES_USER": "${userHome}/.emu6502-p4/user"
+        }
+      },
+      "group": { "kind": "build", "isDefault": true },
+      "problemMatcher": ["$gcc"],
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+    },
+    {
+      "label": "P4: Build & Upload",
+      "type": "shell",
+      "command": "arduino-cli",
+      "args": [
+        "upload",
+        "-p",
+        "COM9",
+        "--fqbn",
+        "esp32:esp32:esp32p4:PSRAM=enabled,FlashSize=16M,ChipVariant=postv3,PartitionScheme=huge_app,DebugLevel=error",
+        "--input-dir",
+        "${userHome}/.emu16-p4-build",
+        "${workspaceFolder}/emu16"
+      ],
+      "options": {
+        "env": {
+          "ARDUINO_DIRECTORIES_DATA": "${userHome}/.emu6502-p4/data",
+          "ARDUINO_DIRECTORIES_USER": "${userHome}/.emu6502-p4/user"
+        }
+      },
+      "dependsOn": "P4: Build",
+      "dependsOrder": "sequence",
+      "group": "build",
+      "problemMatcher": ["$gcc"],
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+    },
+    {
+      "label": "desktop: build",
+      "type": "process",
+      "command": "C:\\msys64\\usr\\bin\\bash.exe",
+      "args": [
+        "-lc",
+        "cd /c/Users/lucia/repos/emu16 && cmake -G 'Unix Makefiles' -S . -B build -DCMAKE_BUILD_TYPE=Debug && make -C build -j8"
+      ],
+      "options": { "env": { "MSYSTEM": "MINGW32", "CHERE_INVOKING": "1" } },
+      "group": "build",
+      "problemMatcher": ["$gcc"],
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+    },
+    {
+      "label": "desktop: run",
+      "type": "process",
+      "command": "${workspaceFolder}/build/emu16.exe",
+      "dependsOn": "desktop: build",
+      "problemMatcher": [],
+      "presentation": { "reveal": "always", "panel": "shared", "clear": true }
+    }
+  ]
+}

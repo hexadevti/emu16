@@ -1,0 +1,12 @@
+# build output
+build/
+build-*/
+*.o
+*.obj
+*.exe
+*.dll
+
+# the desktop build's SD card: ROMs are copyrighted, never commit them
+sdcard/
+
+.claude/
