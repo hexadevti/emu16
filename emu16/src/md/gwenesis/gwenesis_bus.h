@@ -71,8 +71,16 @@ enum mapped_address
     Z80_CTRL,
     TMSS_CTRL,
     VDP_ADDR,
-    RAM_ADDR
+    RAM_ADDR,
+    CART_CTRL      // emu16: 0xA130xx, the SRAM / mapper register
 };
+
+// emu16: battery-backed cartridge SRAM, a byte array covering 68k addresses [start, end]. The
+// frontend owns the buffer and saves it when gwenesis_sram_dirty is set.
+void gwenesis_sram_setup(unsigned char *buf, unsigned int start, unsigned int end, int mappedAlways);
+extern unsigned char *gwenesis_sram;
+extern unsigned int gwenesis_sram_start, gwenesis_sram_end;
+extern int gwenesis_sram_dirty;
 
 enum gwenesis_bus_pad_button
 {

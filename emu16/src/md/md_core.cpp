@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#include <string>
 #include "../../core.h"
 #include "../hal/hal.h"
 
@@ -53,6 +54,66 @@ static uint8_t *s_rom = nullptr;
 static int16_t  s_mix[MD_AUDIO_BUF];
 static bool     s_pal = false;
 
+// cartridge SRAM, saved to <rom>.srm about a second after the game stops writing to it
+static uint8_t    *s_sram = nullptr;
+static uint32_t    s_sramSize = 0;
+static std::string s_sramPath;
+static bool        s_sramPending = false;
+static int         s_sramQuiet = 0;
+
+static void sramFlush() {
+  if (!s_sram || (!s_sramPending && !gwenesis_sram_dirty)) return;
+  if (FILE *f = fopen(s_sramPath.c_str(), "wb")) {
+    fwrite(s_sram, 1, s_sramSize, f);
+    fclose(f);
+    hal_log("md: SRAM saved to %s", s_sramPath.c_str());
+  } else {
+    hal_log("md: cannot write %s", s_sramPath.c_str());
+  }
+  s_sramPending = false;
+  gwenesis_sram_dirty = 0;
+}
+
+static void sramTick() {
+  if (gwenesis_sram_dirty) { gwenesis_sram_dirty = 0; s_sramPending = true; s_sramQuiet = 0; return; }
+  if (s_sramPending && ++s_sramQuiet >= 60) sramFlush();
+}
+
+// The header's "RA" block declares the SRAM range (GPGX's rules: at most 64 KB, odd end).
+// Read from the file image, before Gwenesis byte-swaps the ROM.
+static void sramSetup(const char *romPath, long romSize) {
+  hal_free(s_sram);
+  s_sram = nullptr;
+  s_sramSize = 0;
+  s_sramPending = false;
+  gwenesis_sram_setup(nullptr, 0, 0, 0);
+  if (romSize < 0x1BC || s_rom[0x1B0] != 'R' || s_rom[0x1B1] != 'A') return;
+  auto be32 = [](const uint8_t *p) { return (uint32_t)p[0] << 24 | p[1] << 16 | p[2] << 8 | p[3]; };
+  uint32_t start = be32(s_rom + 0x1B4), end = be32(s_rom + 0x1B8);
+  if (start > end || end - start >= 0x10000) end = start + 0xFFFF;
+  start &= 0xFFFFFE;
+  end |= 1;
+  if (start >= 0x800000 || end >= 0x800000) return;
+  s_sramSize = end - start + 1;
+  s_sram = (uint8_t *)hal_alloc_big(s_sramSize);
+  if (!s_sram) return;
+  memset(s_sram, 0xFF, s_sramSize);
+
+  s_sramPath = romPath;
+  const size_t dot = s_sramPath.find_last_of('.'), slash = s_sramPath.find_last_of('/');
+  if (dot != std::string::npos && (slash == std::string::npos || dot > slash)) s_sramPath.erase(dot);
+  s_sramPath += ".srm";
+  if (FILE *f = fopen(s_sramPath.c_str(), "rb")) {
+    const size_t got = fread(s_sram, 1, s_sramSize, f);
+    fclose(f);
+    hal_log("md: SRAM %06X-%06X loaded from %s (%u bytes)", (unsigned)start, (unsigned)end, s_sramPath.c_str(), (unsigned)got);
+  } else {
+    hal_log("md: SRAM %06X-%06X (new)", (unsigned)start, (unsigned)end);
+  }
+  // mapped all the time when it sits past the end of the ROM, else switched by 0xA130F1
+  gwenesis_sram_setup(s_sram, start, end, (uint32_t)romSize <= start);
+}
+
 // ------------------------------------------------------------------------------------------------
 static bool md_init() {
   if (!s_rom) s_rom = (uint8_t *)hal_alloc_big(MAX_ROM_SIZE + ROM_PAD);
@@ -60,6 +121,10 @@ static bool md_init() {
 }
 
 static void md_shutdown() {
+  sramFlush();
+  hal_free(s_sram);
+  s_sram = nullptr;
+  gwenesis_sram_setup(nullptr, 0, 0, 0);
   hal_free(s_rom);
   s_rom = nullptr;
   ROM_DATA = nullptr;
@@ -112,6 +177,7 @@ static bool md_loadRom(const char *path) {
   }
   if (size > MAX_ROM_SIZE) size = MAX_ROM_SIZE;
   if (size & 1) size++;                 // the byte swap works on words
+  sramSetup(path, size);
 
   gwenesis_H32upscaler = 1;             // 256-wide modes fill the 320-wide screen
   load_cartridge(s_rom, (size_t)size);
@@ -196,6 +262,7 @@ static void md_runFrame(bool draw) {
   }
   m68k.cycles -= system_clock;
   frame_counter++;
+  sramTick();
 
   if (draw) hal_video_submit(y0, screen_height);
 

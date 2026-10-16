@@ -161,6 +161,10 @@
 	extern unsigned char M68K_RAM[];
 #endif
 
+// emu16: data reads below this address come straight from ROM_DATA; above it they go through the
+// bus. It is 0x800000 unless cartridge SRAM is mapped over the ROM area (gwenesis_bus.c).
+extern unsigned int m68k_rom_limit;
+
 #define FETCH8ROM(A) ((ROM_DATA[((A) ^ 1)]))
 #define FETCH16ROM(A) ((*(unsigned short *)&ROM_DATA[(A)]))
 #define FETCH32ROM(A) ( (*(unsigned int *)&ROM_DATA[(A)] << 16) | (*(unsigned int *)&ROM_DATA[(A)] >> 16) )

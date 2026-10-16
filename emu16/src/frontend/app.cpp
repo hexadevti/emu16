@@ -65,19 +65,23 @@ static bool adjustSetting(int row, uint8_t key) {
   return false;
 }
 
-static void settingValues(char vol[8], const char **fs, const char **fps) {
-  snprintf(vol, 8, "%d", g_settings.volume);
-  *fs = kFrameskipNames[g_settings.frameskip];
-  *fps = g_settings.showFps ? "On" : "Off";
+// The three settings rows, as shown in both menus.
+static void settingItems(ui::Item out[3]) {
+  out[0] = { "Volume", nullptr, ui::ICON_VOLUME, nullptr, (int8_t)g_settings.volume, true };
+  out[1] = { "Frameskip", kFrameskipNames[g_settings.frameskip], ui::ICON_SKIP, nullptr, -1, true };
+  out[2] = { "Show FPS", g_settings.showFps ? "On" : "Off", ui::ICON_CHART, nullptr, -1, true };
 }
 
 static void settingsMenu() {
   int sel = 0;
+  ui::Screen scr;
+  scr.title = "Settings";
+  scr.subtitle = "Saved to /emu16/emu16.cfg";
+  scr.hints = "<>|Change;Esc|Back";
   for (;;) {
-    char vol[8]; const char *fs, *fps;
-    settingValues(vol, &fs, &fps);
-    const ui::Item items[] = { { "Volume", vol }, { "Frameskip", fs }, { "Log FPS", fps } };
-    const uint8_t k = ui::list("Settings", items, 3, &sel, "Left/Right: change   Esc: back");
+    ui::Item items[3];
+    settingItems(items);
+    const uint8_t k = ui::list(scr, items, 3, &sel);
     if (k == KEY_ESC || k == KEY_BACKSPACE) break;
     adjustSetting(sel, k == KEY_ENTER ? KEY_RIGHT : k);
   }
@@ -116,18 +120,34 @@ static bool loadState(const EmuCore &core, const std::string &rom) {
 
 enum class MenuResult { Resume, Quit };
 
+static std::string gameTitle(const std::string &rom) {
+  const size_t s = rom.find_last_of('/');
+  std::string base = s == std::string::npos ? rom : rom.substr(s + 1);
+  const size_t dot = base.find_last_of('.');
+  if (dot != std::string::npos) base.erase(dot);
+  return base;
+}
+
 static MenuResult gameMenu(const EmuCore &core, const std::string &rom) {
   hal_audio_silence();
   hal_video_wait();
+  ui::setBackdrop(hal_video_front());
+  const std::string title = gameTitle(rom);
+  ui::Screen scr;
+  scr.title = title.c_str();
+  scr.subtitle = core.name;
+  scr.hints = "Enter|Select;<>|Change;Esc|Resume";
   int sel = 0;
+  MenuResult result = MenuResult::Resume;
   for (;;) {
-    char vol[8]; const char *fs, *fps;
-    settingValues(vol, &fs, &fps);
-    const ui::Item items[] = {
-      { "Resume", nullptr }, { "Reset", nullptr }, { "Save state", nullptr }, { "Load state", nullptr },
-      { "Volume", vol }, { "Frameskip", fs }, { "Log FPS", fps }, { "Quit game", nullptr },
-    };
-    const uint8_t k = ui::list(core.name, items, 8, &sel, "Enter: select   Esc: resume");
+    ui::Item items[8];
+    items[0] = { "Resume", nullptr, ui::ICON_PLAY };
+    items[1] = { "Reset", nullptr, ui::ICON_RESET };
+    items[2] = { "Save state", nullptr, ui::ICON_SAVE };
+    items[3] = { "Load state", nullptr, ui::ICON_LOAD };
+    settingItems(items + 4);
+    items[7] = { "Quit game", nullptr, ui::ICON_QUIT };
+    const uint8_t k = ui::list(scr, items, 8, &sel);
     if (k == KEY_ESC) break;
     if (sel >= 4 && sel <= 6) {
       if (k == KEY_LEFT || k == KEY_RIGHT || k == KEY_ENTER) adjustSetting(sel - 4, k == KEY_ENTER ? KEY_RIGHT : k);
@@ -142,27 +162,40 @@ static MenuResult gameMenu(const EmuCore &core, const std::string &rom) {
       ui::message("Load state", "No state for this game", 900);
       continue;
     }
-    if (sel == 7) { settingsSave(); return MenuResult::Quit; }
+    if (sel == 7) { result = MenuResult::Quit; break; }
   }
   settingsSave();
-  hal_display_fill(0, 0, SCREEN_W, SCREEN_H, 0);
-  return MenuResult::Resume;
+  ui::clearBackdrop();
+  if (result == MenuResult::Resume) hal_panel_fill(0, 0, PANEL_W, PANEL_H, 0);
+  return result;
+}
+
+// The FPS meter lives in the black band above the game picture, so it never covers the game.
+static void showFps(uint32_t fps, uint32_t drawn, int skip, unsigned load) {
+  char b[64];
+  snprintf(b, sizeof(b), "%u fps  %u drawn  skip %d  cpu %u%%", (unsigned)fps, (unsigned)drawn, skip, load);
+  const int y = SCREEN_Y0 - 18;
+  ui::fill(0, y, PANEL_W, 14, 0);
+  ui::text(PANEL_W / 2, y + 7, b, load > 100 ? ui::kWarn : ui::kGood, 1, ui::MC);
+  hal_panel_push(0, y, PANEL_W, 14, ui::canvas() + y * PANEL_W, PANEL_W);
+  hal_log("%s", b);
 }
 
 static void runGame(const EmuCore &core, const std::string &rom) {
-  ui::message(core.name, "Loading...");
+  ui::message("Loading", gameTitle(rom).c_str());
   if (!core.init() || !core.loadRom(rom.c_str())) {
     ui::message("Error", "Cannot load this ROM", 1500);
     core.shutdown();
     return;
   }
   hal_audio_volume(g_settings.volume);
-  hal_display_fill(0, 0, SCREEN_W, SCREEN_H, 0);
+  hal_panel_fill(0, 0, PANEL_W, PANEL_H, 0);
 
   uint32_t pad = 0;
   int phase = 0, autoSkip = 0, evalCount = 0;
   uint64_t workSum = 0;
   uint32_t fpsT0 = hal_millis(), fpsFrames = 0, fpsDrawn = 0;
+  uint64_t fpsWork = 0;
 
   for (;;) {
     // input
@@ -208,12 +241,14 @@ static void runGame(const EmuCore &core, const std::string &rom) {
     }
 
     fpsFrames++;
+    fpsWork += work;
     if (draw) fpsDrawn++;
-    if (g_settings.showFps && hal_millis() - fpsT0 >= 5000) {
+    if (g_settings.showFps && hal_millis() - fpsT0 >= 1000) {
       const uint32_t ms = hal_millis() - fpsT0;
-      hal_log("fps: %u emulated, %u drawn, skip %d", (unsigned)(fpsFrames * 1000 / ms),
-              (unsigned)(fpsDrawn * 1000 / ms), skip);
-      fpsT0 = hal_millis(); fpsFrames = fpsDrawn = 0;
+      // load: emulation time (without waiting for audio) against the real-time budget
+      const unsigned load = (unsigned)(fpsWork * core.frameRate() / 10000 / fpsFrames);
+      showFps(fpsFrames * 1000 / ms, fpsDrawn * 1000 / ms, skip, load);
+      fpsT0 = hal_millis(); fpsFrames = fpsDrawn = 0; fpsWork = 0;
     }
   }
   hal_audio_silence();
@@ -231,6 +266,7 @@ void app_setup() {
 
 void app_loop() {
   if (!hal_sd_mounted()) {
+    ui::drawBackground();
     ui::message("No SD card", "Insert a card with /roms/md and restart", 0);
     for (;;) ui::waitKey();   // its hotkeys still reach the loader / restart
   }
@@ -238,11 +274,24 @@ void app_loop() {
   if (const char *rom = getenv("EMU16_ROM")) { runGame(*kCores[0], rom); exit(0); }   // test hook
 #endif
   static int sel = 0;
+  static std::string subs[kNumCores];
   ui::Item items[kNumCores + 2];
-  for (int i = 0; i < kNumCores; i++) items[i] = { kCores[i]->name, nullptr };
-  items[kNumCores] = { "Settings", nullptr };
-  items[kNumCores + 1] = { "Exit to loader", nullptr };
-  if (ui::list("emu16", items, kNumCores + 2, &sel, BOARD_NAME) != KEY_ENTER) return;
+  for (int i = 0; i < kNumCores; i++) {
+    subs[i] = std::string("ROMs in /roms/") + kCores[i]->shortName;
+    items[i] = { kCores[i]->name, nullptr, ui::ICON_PAD, subs[i].c_str() };
+  }
+  items[kNumCores] = { "Settings", nullptr, ui::ICON_GEAR, "Volume, frameskip, FPS meter" };
+#if defined(BOARD_DESKTOP)
+  items[kNumCores + 1] = { "Quit", nullptr, ui::ICON_EXIT, "Close the window" };
+#else
+  items[kNumCores + 1] = { "Exit to loader", nullptr, ui::ICON_EXIT, "Back to the esp32loader menu" };
+#endif
+  ui::Screen scr;
+  scr.title = "emu16";
+  scr.subtitle = "16-BIT SYSTEMS";
+  scr.hints = "Up/Dn|Move;Enter|Select";
+  scr.logo = true;
+  if (ui::list(scr, items, kNumCores + 2, &sel) != KEY_ENTER) return;
   if (sel < kNumCores) {
     std::string rom;
     while (browseRom(*kCores[sel], rom)) {

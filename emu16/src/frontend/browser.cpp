@@ -1,6 +1,7 @@
 // browser.cpp -- picks a ROM: folders first, then files with one of the core's extensions.
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 #include <strings.h>
 #include <dirent.h>
 #include <algorithm>
@@ -59,23 +60,36 @@ bool browseRom(const EmuCore &core, std::string &outPath) {
     const bool atRoot = dir == root;
     if (!atRoot) entries.insert(entries.begin(), { "..", true });
 
-    std::vector<std::string> labels(entries.size());
+    // files show without their extension, which goes in the value column as a tag
+    std::vector<std::string> labels(entries.size()), tags(entries.size());
     std::vector<ui::Item> items(entries.size());
-    int sel = 0;
+    int sel = !atRoot && entries.size() > 1 ? 1 : 0;      // the first entry, not "Parent folder"
     for (size_t i = 0; i < entries.size(); i++) {
-      labels[i] = entries[i].dir && entries[i].name != ".." ? entries[i].name + "/" : entries[i].name;
-      items[i] = { labels[i].c_str(), nullptr };
-      if (entries[i].name == selectName) sel = (int)i;
+      const Entry &e = entries[i];
+      if (e.name == "..") {
+        labels[i] = "Parent folder";
+        items[i] = { labels[i].c_str(), nullptr, ui::ICON_UP };
+      } else if (e.dir) {
+        labels[i] = e.name;
+        items[i] = { labels[i].c_str(), nullptr, ui::ICON_FOLDER };
+      } else {
+        const size_t dot = e.name.find_last_of('.');
+        labels[i] = e.name.substr(0, dot);
+        for (size_t c = dot + 1; c < e.name.size(); c++) tags[i] += (char)toupper((unsigned char)e.name[c]);
+        items[i] = { labels[i].c_str(), tags[i].c_str(), ui::ICON_CART };
+      }
+      if (e.name == selectName) sel = (int)i;
     }
     selectName.clear();
 
-    std::string title = core.name;
     const std::string shown = dir.size() > root.size() ? dir.substr(root.size()) : std::string("/");
-    char footer[96];
-    snprintf(footer, sizeof(footer), "%s   Enter: open   Esc: back", shown.c_str());
-    if (entries.empty()) items.push_back({ "(no ROMs here)", nullptr });
+    if (entries.empty()) items.push_back({ "No ROMs in this folder", nullptr, ui::ICON_NONE });
 
-    const uint8_t k = ui::list(title.c_str(), items.data(), (int)items.size(), &sel, footer);
+    ui::Screen scr;
+    scr.title = core.name;
+    scr.subtitle = shown.c_str();
+    scr.hints = atRoot ? "Enter|Open;Esc|Back" : "Enter|Open;Bs|Up;Esc|Back";
+    const uint8_t k = ui::list(scr, items.data(), (int)items.size(), &sel);
     if (k == KEY_ESC || ((k == KEY_BACKSPACE || k == KEY_LEFT) && atRoot)) return false;
     if (k == KEY_BACKSPACE || k == KEY_LEFT) {
       selectName = dir.substr(dir.find_last_of('/') + 1);

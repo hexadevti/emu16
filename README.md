@@ -25,7 +25,10 @@ system, then the game.
 | Ctrl-Shift-Up | reboot to esp32loader | same |
 | Ctrl-Shift-F3 | restart | same |
 
-Settings are stored in `/emu16/emu16.cfg` and save states in `/emu16/states/<game>.st0`.
+Settings are stored in `/emu16/emu16.cfg` and save states in `/emu16/states/<game>.st0`. Games
+with battery-backed saves write them to `<game>.srm` next to the ROM, about a second after the game
+stops writing and again when you quit the game. **Settings > Show FPS** puts a frame rate and CPU
+load meter in the black band above the picture.
 
 ## Building
 
@@ -55,6 +58,10 @@ cmake -G "Unix Makefiles" -S . -B build -DCMAKE_BUILD_TYPE=Debug && make -C buil
 
 The repo's `sdcard/` folder plays the SD card; the `EMU16_SD` environment variable points it
 elsewhere. The window shows the whole 320x320 panel at 2x.
+
+Test hooks: `EMU16_ROM=<file>` starts a game at once; `EMU16_SHOT=N` saves `<sd>/shot.bmp` after N
+screen updates and quits; `EMU16_KEYS` plays a comma-separated key script (`up`, `enter`, `esc`,
+`f5`, a single character, `w500` to wait 500 ms, `shot` to save `<sd>/shotN.bmp`, `quit`).
 
 ## Layout
 

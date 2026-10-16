@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <ctype.h>
 #include <stdarg.h>
 #include <string>
 #include <chrono>
@@ -63,7 +64,18 @@ bool  hal_battery_charging()   { return false; }
 bool        hal_sd_mounted()   { return true; }
 const char *hal_sd_root()      { return s_sdRoot.c_str(); }
 
+static void saveShot(const char *name) {
+  SDL_Surface *sf = SDL_CreateRGBSurfaceWithFormatFrom(s_panel, PANEL_W, PANEL_H, 16, PANEL_W * 2, SDL_PIXELFORMAT_RGB565);
+  const std::string p = s_sdRoot + "/" + name;
+  SDL_SaveBMP(sf, p.c_str());
+  SDL_FreeSurface(sf);
+  hal_log("screenshot saved to %s", p.c_str());
+}
+
 static void present() {
+  // test hook: EMU16_SHOT=N saves the panel to <sd>/shot.bmp after N presents and quits
+  static int shotIn = getenv("EMU16_SHOT") ? atoi(getenv("EMU16_SHOT")) : -1;
+  if (shotIn > 0 && --shotIn == 0) { saveShot("shot.bmp"); exit(0); }
   SDL_UpdateTexture(s_tex, nullptr, s_panel, PANEL_W * 2);
   SDL_RenderClear(s_ren);
   SDL_RenderCopy(s_ren, s_tex, nullptr, nullptr);
@@ -140,8 +152,38 @@ void hal_yield() {
   }
 }
 
+// Test hook: EMU16_KEYS is a comma-separated script run once the queue is empty. Tokens: a key
+// name (up down left right enter esc bs f1..f10 home end pgdn space) or a single character is
+// pressed and released; wNNN waits NNN ms; "shot" saves <sd>/shotN.bmp; "quit" exits.
+static void scriptStep() {
+  static const char *s = getenv("EMU16_KEYS");
+  static uint32_t waitUntil = 0;
+  static int shots = 0;
+  static uint8_t held = 0;
+  if (held && hal_millis() >= waitUntil) { qPush(held, KEYSTATE_RELEASED); held = 0; waitUntil = hal_millis() + 60; }
+  if (!s || !*s || held || s_qHead != s_qTail || hal_millis() < waitUntil) return;
+  const char *end = strchr(s, ',');
+  const std::string t(s, end ? (size_t)(end - s) : strlen(s));
+  s = end ? end + 1 : s + strlen(s);
+  static const struct { const char *n; uint8_t c; } kNames[] = {
+    { "up", KEY_UP }, { "down", KEY_DOWN }, { "left", KEY_LEFT }, { "right", KEY_RIGHT },
+    { "enter", KEY_ENTER }, { "esc", KEY_ESC }, { "bs", KEY_BACKSPACE }, { "home", KEY_HOME },
+    { "end", KEY_END }, { "pgdn", KEY_PGDN }, { "space", KEY_SPACE },
+    { "f1", KEY_F1 }, { "f2", KEY_F2 }, { "f3", KEY_F3 }, { "f4", KEY_F4 }, { "f5", KEY_F5 },
+    { "f6", KEY_F6 }, { "f7", KEY_F7 }, { "f8", KEY_F8 }, { "f9", KEY_F9 }, { "f10", KEY_F10 },
+  };
+  if (t == "quit") exit(0);
+  if (t == "shot") { char n[32]; snprintf(n, sizeof(n), "shot%d.bmp", ++shots); saveShot(n); return; }
+  if (t.size() > 1 && t[0] == 'w' && isdigit((unsigned char)t[1])) { waitUntil = hal_millis() + atoi(t.c_str() + 1); return; }
+  uint8_t c = t.size() == 1 ? (uint8_t)t[0] : 0;
+  for (const auto &k : kNames) if (t == k.n) c = k.c;
+  if (c) { qPush(c, KEYSTATE_PRESSED); held = c; }
+  waitUntil = hal_millis() + 80;
+}
+
 bool hal_key_poll(KeyEvent *ev) {
   hal_yield();
+  scriptStep();
   if (s_qHead == s_qTail) return false;
   *ev = s_q[s_qHead];
   s_qHead = (s_qHead + 1) % 128;
@@ -168,18 +210,25 @@ void hal_display_fill(int x, int y, int w, int h, uint16_t c) {
   hal_panel_fill(x, y + SCREEN_Y0, w, h, c);
 }
 
-void hal_display_push(int x, int y, int w, int h, const uint16_t *px, int stride) {
+void hal_panel_push(int x, int y, int w, int h, const uint16_t *px, int stride) {
   if (x < 0) { px -= x; w += x; x = 0; }
   if (y < 0) { px -= y * stride; h += y; y = 0; }
-  if (x + w > SCREEN_W) w = SCREEN_W - x;
-  if (y + h > SCREEN_H) h = SCREEN_H - y;
+  if (x + w > PANEL_W) w = PANEL_W - x;
+  if (y + h > PANEL_H) h = PANEL_H - y;
   if (w <= 0 || h <= 0) return;
   for (int r = 0; r < h; r++)
-    memcpy(&s_panel[(SCREEN_Y0 + y + r) * PANEL_W + x], px + r * stride, w * 2);
+    memcpy(&s_panel[(y + r) * PANEL_W + x], px + r * stride, w * 2);
   present();
 }
 
+void hal_display_push(int x, int y, int w, int h, const uint16_t *px, int stride) {
+  if (y < 0) { px -= y * stride; h += y; y = 0; }
+  if (y + h > SCREEN_H) h = SCREEN_H - y;
+  hal_panel_push(x, y + SCREEN_Y0, w, h, px, stride);
+}
+
 uint16_t *hal_video_back() { return s_vbuf[s_back]; }
+const uint16_t *hal_video_front() { return s_vbuf[s_back ^ 1]; }
 
 uint16_t *hal_video_submit(int y, int h) {
   if (y < 0) { h += y; y = 0; }
@@ -190,16 +239,6 @@ uint16_t *hal_video_submit(int y, int h) {
   }
   s_back ^= 1;
   hal_yield();
-  // test hook: EMU16_SHOT=N saves the panel to <sd>/shot.bmp after N frames and quits
-  static int shotIn = getenv("EMU16_SHOT") ? atoi(getenv("EMU16_SHOT")) : -1;
-  if (shotIn > 0 && --shotIn == 0) {
-    SDL_Surface *sf = SDL_CreateRGBSurfaceWithFormatFrom(s_panel, PANEL_W, PANEL_H, 16, PANEL_W * 2, SDL_PIXELFORMAT_RGB565);
-    const std::string p = s_sdRoot + "/shot.bmp";
-    SDL_SaveBMP(sf, p.c_str());
-    SDL_FreeSurface(sf);
-    hal_log("screenshot saved to %s", p.c_str());
-    exit(0);
-  }
   return s_vbuf[s_back];
 }
 

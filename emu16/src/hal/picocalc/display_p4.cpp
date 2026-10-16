@@ -226,6 +226,7 @@ void hal_video_wait() {
 }
 
 uint16_t *hal_video_back() { return s_vbuf[s_back]; }
+const uint16_t *hal_video_front() { return s_vbuf[s_back ^ 1]; }
 
 uint16_t *hal_video_submit(int y, int h) {
   if (y < 0) { h += y; y = 0; }
@@ -258,18 +259,24 @@ void hal_display_fill(int x, int y, int w, int h, uint16_t c) {
   hal_panel_fill(x, y + SCREEN_Y0, w, h, c);
 }
 
-void hal_display_push(int x, int y, int w, int h, const uint16_t *px, int stride) {
+void hal_panel_push(int x, int y, int w, int h, const uint16_t *px, int stride) {
   if (x < 0) { px -= x; w += x; x = 0; }
   if (y < 0) { px -= y * stride; h += y; y = 0; }
-  if (x + w > SCREEN_W) w = SCREEN_W - x;
-  if (y + h > SCREEN_H) h = SCREEN_H - y;
+  if (x + w > PANEL_W) w = PANEL_W - x;
+  if (y + h > PANEL_H) h = PANEL_H - y;
   if (w <= 0 || h <= 0) return;
   hal_video_wait();
   xSemaphoreTake(s_lock, portMAX_DELAY);
-  panelWindow(x, y + SCREEN_Y0, x + w - 1, y + SCREEN_Y0 + h - 1);
+  panelWindow(x, y, x + w - 1, y + h - 1);
   txRect(px, w, h, stride);
   txWait();
   xSemaphoreGive(s_lock);
+}
+
+void hal_display_push(int x, int y, int w, int h, const uint16_t *px, int stride) {
+  if (y < 0) { px -= y * stride; h += y; y = 0; }
+  if (y + h > SCREEN_H) h = SCREEN_H - y;
+  hal_panel_push(x, y + SCREEN_Y0, w, h, px, stride);
 }
 
 void p4DisplayInit() {

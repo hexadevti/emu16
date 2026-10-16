@@ -55,6 +55,7 @@ bool     hal_battery_charging();
 void hal_display_push(int x, int y, int w, int h, const uint16_t *px, int stride);
 void hal_display_fill(int x, int y, int w, int h, uint16_t color);
 void hal_panel_fill(int x, int y, int w, int h, uint16_t color);   // raw panel coordinates
+void hal_panel_push(int x, int y, int w, int h, const uint16_t *px, int stride);   // same
 
 // Game video, double buffered. The core draws a whole frame into hal_video_back() (320x240,
 // stride 320), then hal_video_submit() hands it to the display and returns the other buffer.
@@ -62,6 +63,7 @@ void hal_panel_fill(int x, int y, int w, int h, uint16_t color);   // raw panel 
 uint16_t *hal_video_back();
 uint16_t *hal_video_submit(int y, int h);
 void      hal_video_wait();                // until the last submitted frame is on the panel
+const uint16_t *hal_video_front();        // the last submitted frame (the in-game menu backdrop)
 
 // ---------------------------------------------------------------------------------------------
 // input

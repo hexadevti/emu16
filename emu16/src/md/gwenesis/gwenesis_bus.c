@@ -67,6 +67,31 @@ unsigned char *M68K_RAM=(void *)(uint32_t)(0); // 68K RAM
 // emu16: the ROM is a caller-owned buffer of MAX_ROM_SIZE+ROM_PAD bytes (PSRAM on the P4), not an 8MB
 // static array. load_cartridge() byte-swaps it in place, so the caller must not reuse its contents.
 unsigned char *ROM_DATA = 0;          // 68K Main Program (uncompressed)
+
+// emu16: cartridge SRAM
+unsigned int m68k_rom_limit = 0x800000;
+unsigned char *gwenesis_sram = 0;
+unsigned int gwenesis_sram_start = 0, gwenesis_sram_end = 0;
+int gwenesis_sram_dirty = 0;
+static int sram_mapped = 0, sram_always = 0;
+
+static void sram_map(int on) {
+  sram_mapped = gwenesis_sram && (on || sram_always);
+  m68k_rom_limit = sram_mapped ? gwenesis_sram_start : 0x800000;
+}
+
+void gwenesis_sram_setup(unsigned char *buf, unsigned int start, unsigned int end, int mappedAlways) {
+  gwenesis_sram = buf;
+  gwenesis_sram_start = start;
+  gwenesis_sram_end = end;
+  gwenesis_sram_dirty = 0;
+  sram_always = mappedAlways;
+  sram_map(0);
+}
+
+static inline int in_sram(unsigned int address) {
+  return sram_mapped && address >= gwenesis_sram_start && address <= gwenesis_sram_end;
+}
 unsigned char M68K_RAM[MAX_RAM_SIZE];    // 68K RAM
 #endif
 
@@ -325,6 +350,7 @@ static inline unsigned int gwenesis_bus_map_z80_address(unsigned int address) {
  ******************************************************************************/
 static inline unsigned int gwenesis_bus_map_io_address(unsigned int address)
 {
+  if ((address & 0xFF00) == 0x3000) return CART_CTRL;   // emu16
   unsigned int range = (address & 0x1000) ;
   switch (range) {
   case 0:      return IO_CTRL;
@@ -385,6 +411,7 @@ static inline unsigned int gwenesis_bus_read_memory_8(unsigned int address) {
     return gwenesis_vdp_read_memory_8(address);
 
   case ROM_ADDR:
+    if (in_sram(address)) return gwenesis_sram[address - gwenesis_sram_start];
     return FETCH8ROM(address);
 
   case RAM_ADDR:
@@ -435,6 +462,10 @@ static inline unsigned int gwenesis_bus_read_memory_16(unsigned int address) {
     return FETCH16RAM(address);
 
   case ROM_ADDR:
+    if (in_sram(address)) {
+      const unsigned int o = address - gwenesis_sram_start;
+      return (gwenesis_sram[o] << 8) | (address < gwenesis_sram_end ? gwenesis_sram[o + 1] : 0xFF);
+    }
     return FETCH16ROM(address);
 
   case IO_CTRL:
@@ -488,6 +519,17 @@ static inline void gwenesis_bus_write_memory_8(unsigned int address,
 
   case RAM_ADDR:
     WRITE8RAM(address, value);
+    return;
+
+  case ROM_ADDR:                         // emu16: only SRAM is writable in the cartridge area
+    if (in_sram(address)) {
+      unsigned char *p = &gwenesis_sram[address - gwenesis_sram_start];
+      if (*p != (unsigned char)value) { *p = (unsigned char)value; gwenesis_sram_dirty = 1; }
+    }
+    return;
+
+  case CART_CTRL:                        // emu16: 0xA130F1 bit 0 maps SRAM over the ROM
+    if ((address & 0xFF) == 0xF1) sram_map(value & 1);
     return;
 
   case IO_CTRL:
@@ -683,6 +725,10 @@ void gwenesis_bus_save_state() {
   saveGwenesisStateSetBuffer(state, "TMSS", TMSS, sizeof(TMSS));
   saveGwenesisStateSet(state, "tmss_state", tmss_state);
   saveGwenesisStateSet(state, "tmss_count", tmss_count);
+  if (gwenesis_sram) {                   // emu16
+    saveGwenesisStateSetBuffer(state, "SRAM", gwenesis_sram, gwenesis_sram_end - gwenesis_sram_start + 1);
+    saveGwenesisStateSet(state, "sram_mapped", sram_mapped);
+  }
 }
 
 void gwenesis_bus_load_state() {
@@ -692,4 +738,9 @@ void gwenesis_bus_load_state() {
     saveGwenesisStateGetBuffer(state, "TMSS", TMSS, sizeof(TMSS));
     tmss_state = saveGwenesisStateGet(state, "tmss_state");
     tmss_count = saveGwenesisStateGet(state, "tmss_count");
+    if (gwenesis_sram) {                 // emu16
+      saveGwenesisStateGetBuffer(state, "SRAM", gwenesis_sram, gwenesis_sram_end - gwenesis_sram_start + 1);
+      sram_map(saveGwenesisStateGet(state, "sram_mapped"));
+      gwenesis_sram_dirty = 1;
+    }
 }
