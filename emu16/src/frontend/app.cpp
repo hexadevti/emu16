@@ -1,8 +1,8 @@
 // app.cpp -- the frontend: home menu (systems, settings, loader), ROM browser, the game loop with
 // keyboard-to-pad mapping and frameskip, and the in-game menu.
 //
-// Keys in game:   arrows = d-pad, Z/J = A, X/K = B, C/L = C, Enter = Start, Esc/F1 = menu,
-//                 F5 = quick save, F7 = quick load
+// Keys in game:   arrows = d-pad, F3/F4/F5 = A/B/C, Caps/Del/Backspace = X/Y/Z, Space = Mode,
+//                 Enter = Start, Esc/F1 = menu, Ctrl-S = quick save, Ctrl-L = quick load
 // Anywhere:       Ctrl-Shift-Up (arrives as PgUp in game) = esp32loader, F8 (Ctrl-Shift-F3) = restart
 #include <stdio.h>
 #include <stdlib.h>
@@ -17,7 +17,8 @@
 #include "../../core.h"
 
 extern const EmuCore kMegaDrive;
-const EmuCore *const kCores[] = { &kMegaDrive };
+extern const EmuCore kPcEngine;
+const EmuCore *const kCores[] = { &kMegaDrive, &kPcEngine };
 const int kNumCores = sizeof(kCores) / sizeof(kCores[0]);
 
 static const char *const kFrameskipNames[] = { "Auto", "1 of 2", "1 of 3", "1 of 4" };
@@ -27,22 +28,19 @@ static const char *const kFrameskipNames[] = { "Auto", "1 of 2", "1 of 3", "1 of
 // ------------------------------------------------------------------------------------------------
 static uint32_t padBit(uint8_t code) {
   switch (code) {
-    case KEY_UP:    return PAD_BTN_UP;
-    case KEY_DOWN:  return PAD_BTN_DOWN;
-    case KEY_LEFT:  return PAD_BTN_LEFT;
-    case KEY_RIGHT: return PAD_BTN_RIGHT;
-    case KEY_ENTER: return PAD_BTN_START;
-    default: break;
-  }
-  switch (tolower(code)) {
-    case 'z': case 'j': return PAD_BTN_A;
-    case 'x': case 'k': return PAD_BTN_B;
-    case 'c': case 'l': return PAD_BTN_C;
-    case 'a': case 'u': return PAD_BTN_X;
-    case 's': case 'i': return PAD_BTN_Y;
-    case 'd': case 'o': return PAD_BTN_Z;
-    case ' ':           return PAD_BTN_MODE;
-    default: return 0;
+    case KEY_UP:        return PAD_BTN_UP;
+    case KEY_DOWN:      return PAD_BTN_DOWN;
+    case KEY_LEFT:      return PAD_BTN_LEFT;
+    case KEY_RIGHT:     return PAD_BTN_RIGHT;
+    case KEY_ENTER:     return PAD_BTN_START;
+    case KEY_F3:        return PAD_BTN_A;
+    case KEY_F4:        return PAD_BTN_B;
+    case KEY_F5:        return PAD_BTN_C;
+    case KEY_CAPS:      return PAD_BTN_X;
+    case KEY_DEL:       return PAD_BTN_Y;
+    case KEY_BACKSPACE: return PAD_BTN_Z;
+    case KEY_SPACE:     return PAD_BTN_MODE;
+    default:            return 0;
   }
 }
 
@@ -192,6 +190,7 @@ static void runGame(const EmuCore &core, const std::string &rom) {
   hal_panel_fill(0, 0, PANEL_W, PANEL_H, 0);
 
   uint32_t pad = 0;
+  bool ctrl = false;
   int phase = 0, autoSkip = 0, evalCount = 0;
   uint64_t workSum = 0;
   uint32_t fpsT0 = hal_millis(), fpsFrames = 0, fpsDrawn = 0;
@@ -203,18 +202,21 @@ static void runGame(const EmuCore &core, const std::string &rom) {
     bool menu = false;
     while (hal_key_poll(&ev)) {
       const bool down = ev.state != KEYSTATE_RELEASED;
+      if (ev.code == KEY_RELEASE_ALL) { pad = 0; ctrl = false; continue; }   // the keyboard lost an event
+      if (ev.code == KEY_CTRL) { ctrl = down; continue; }
       if (ev.state == KEYSTATE_PRESSED) {
         if (ev.code == KEY_ESC || ev.code == KEY_F1) { menu = true; continue; }
         if (ev.code == KEY_PGUP) hal_reboot_to_loader();
         if (ev.code == KEY_F8) hal_reboot();
-        if (ev.code == KEY_F5) { saveState(core, rom); continue; }
-        if (ev.code == KEY_F7) { loadState(core, rom); continue; }
+        if ((ctrl && tolower(ev.code) == 's') || ev.code == 0x13) { saveState(core, rom); continue; }
+        if ((ctrl && tolower(ev.code) == 'l') || ev.code == 0x0C) { loadState(core, rom); continue; }
       }
       const uint32_t b = padBit(ev.code);
       if (down) pad |= b; else pad &= ~b;
     }
     if (menu) {
       pad = 0;
+      ctrl = false;
       core.setInput(0, 0);
       if (gameMenu(core, rom) == MenuResult::Quit) break;
       phase = autoSkip = evalCount = 0; workSum = 0;
@@ -271,7 +273,11 @@ void app_loop() {
     for (;;) ui::waitKey();   // its hotkeys still reach the loader / restart
   }
 #if defined(BOARD_DESKTOP)
-  if (const char *rom = getenv("EMU16_ROM")) { runGame(*kCores[0], rom); exit(0); }   // test hook
+  if (const char *rom = getenv("EMU16_ROM")) {                                        // test hook
+    const char *dot = strrchr(rom, '.');
+    runGame(dot && !strcasecmp(dot, ".pce") ? kPcEngine : kMegaDrive, rom);
+    exit(0);
+  }
 #endif
   static int sel = 0;
   static std::string subs[kNumCores];

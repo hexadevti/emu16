@@ -55,10 +55,28 @@ static void readBat() {
   s_batCharging = (v & 0x80) != 0;
 }
 
+// Selecting the FIFO already dequeued an event, so a failed read loses it -- possibly a release,
+// which would leave a game button held for good. Then (and when our own queue overflows) a
+// KEY_RELEASE_ALL goes to the frontend instead; a key still down is picked up again on its next press.
+static bool s_lost = false;
+
+static void flushLost() {
+  if (!s_lost) return;
+  const KeyEvent all = { KEY_RELEASE_ALL, KEYSTATE_RELEASED };
+  if (xQueueSend(s_keys, &all, 0) == pdTRUE) s_lost = false;
+}
+
+static void sendKey(uint8_t code, uint8_t state) {
+  flushLost();
+  if (s_lost) return;                    // still full: this one is covered by the release-all
+  const KeyEvent ev = { code, state };
+  if (xQueueSend(s_keys, &ev, 0) != pdTRUE) s_lost = true;
+}
+
 static bool readFifo(uint8_t *state, uint8_t *code) {
   if (!s_selPending) return false;
   s_selPending = false;
-  if (Wire.requestFrom((uint8_t)KBD_I2C_ADDR, (size_t)2) != 2) return false;
+  if (Wire.requestFrom((uint8_t)KBD_I2C_ADDR, (size_t)2) != 2) { s_lost = true; return false; }
   const uint8_t s = (uint8_t)Wire.read(), c = (uint8_t)Wire.read();
   if (s == 0 && c == 0) return false;
   *state = s; *code = c;
@@ -116,12 +134,12 @@ static void kbdTask(void *) {
     // Drain a few events per tick so a burst (several keys at once) is not spread over frames.
     int got = 0;
     while (got < 4 && readFifo(&state, &code)) {
-      KeyEvent ev = { code, state };
-      xQueueSend(s_keys, &ev, 0);
+      sendKey(code, state);
       got++;
       selectReg(KBD_REG_FIF);
       delayMicroseconds(2000);           // STM32 turnaround after a select
     }
+    flushLost();
     if (got) { selectReg(KBD_REG_FIF); continue; }
     const uint32_t now = millis();
     if (!batOnce || now - lastBat >= BAT_POLL_MS) {   // only in place of an empty FIFO select

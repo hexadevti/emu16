@@ -7,21 +7,24 @@ emu8, and its P4 display, keyboard, audio and SD bring-up come from emu8.
 | System | Status | Core |
 |---|---|---|
 | Sega Mega Drive / Genesis | first core | Gwenesis (Musashi 68000, Z80, YM2612, SN76489) |
-| PC Engine, SNES, Neo Geo, Amiga 500 | planned | — |
+| PC Engine / TurboGrafx-16 | new, HuCards only | pce-go from retro-go (HuC6280, VDC/VCE, PSG) |
+| SNES, Neo Geo, Amiga 500 | planned | — |
 
 ## Using it
 
-Put ROMs on the SD card under `/roms/md/` (`.md`, `.gen`, `.bin`, `.smd`). At boot, pick the
-system, then the game.
+Put ROMs on the SD card under `/roms/md/` (`.md`, `.gen`, `.bin`, `.smd`) and `/roms/pce/` (`.pce`).
+At boot, pick the system, then the game. On the PC Engine, F3 is button II, F4 is button I, and F5 or
+Space is Select. CD-ROM, SuperGrafx and the 512-pixel video mode, which is cropped to 352, are not
+supported.
 
 | Key | In game | In menus |
 |---|---|---|
 | Arrows | D-pad | move |
-| Z / J, X / K, C / L | A, B, C | |
-| A / U, S / I, D / O, Space | X, Y, Z, Mode (6-button, for later cores) | |
+| F3, F4, F5 | A, B, C | |
+| Caps, Del, Backspace, Space | X, Y, Z, Mode (6-button, for later cores) | Backspace: up a folder |
 | Enter | Start | select |
 | Esc or F1 | in-game menu (reset, save/load state, volume, frameskip, quit) | back |
-| F5 / F7 | quick save / quick load | |
+| Ctrl-S / Ctrl-L | quick save / quick load | |
 | Ctrl-Shift-Up | reboot to esp32loader | same |
 | Ctrl-Shift-F3 | restart | same |
 
@@ -74,6 +77,7 @@ emu16/src/frontend/      menus, ROM browser, settings, game loop
 emu16/src/cpu/           CPU cores shared between systems (m68k, z80)
 emu16/src/sound/         sound chips (YM2612, SN76489)
 emu16/src/md/            Mega Drive: Gwenesis machine + md_core.cpp glue
+emu16/src/pce/           PC Engine: pce-go machine + pce_core.cpp glue
 ```
 
 To add a system, write `src/<system>/<system>_core.cpp` exporting an `EmuCore`, and add it to
@@ -81,5 +85,5 @@ To add a system, write `src/<system>/<system>_core.cpp` exporting an `EmuCore`, 
 
 ## License
 
-AGPL-3.0, inherited from Gwenesis. The Z80 core and the YM2612 core may not be distributed
+AGPL-3.0, inherited from Gwenesis. The PC Engine core is GPL-2.0-or-later. The Z80 core and the YM2612 core may not be distributed
 commercially. See [THIRD_PARTY.md](THIRD_PARTY.md).

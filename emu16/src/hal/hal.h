@@ -22,6 +22,7 @@ enum : uint8_t {
   KEY_CAPS = 0xC1,
   KEY_BREAK = 0xD0, KEY_INSERT = 0xD1, KEY_HOME = 0xD2, KEY_DEL = 0xD4, KEY_END = 0xD5,
   KEY_PGUP = 0xD6, KEY_PGDN = 0xD7,
+  KEY_RELEASE_ALL = 0x00,   // with KEYSTATE_RELEASED: an event may have been lost, treat every key as up
 };
 
 enum KeyState : uint8_t { KEYSTATE_PRESSED = 1, KEYSTATE_HELD = 2, KEYSTATE_RELEASED = 3 };
