@@ -12,7 +12,7 @@ bundled into a commercial product while those components are included.
 | Z80 core | `emu16/src/cpu/z80/` | Marat Fayzullin, via Gwenesis | **No commercial distribution**; author asks to be notified of changes |
 | YM2612 (FM) | `emu16/src/sound/ym2612.*` | MAME `fm.c` (Jarek Burczynski, Tatsuyuki Satoh) with Genesis Plus GX fixes (Eke-Eke), via Gwenesis | **MAME non-commercial license** (pre-2016 MAME code) |
 | SN76489 (PSG) | `emu16/src/sound/gwenesis_sn76489.*` | Maxim's SN76489 emulation, via Gwenesis | Free use with attribution |
-| pce-go (HuC6280, VDC/VCE, PSG, save states) | `emu16/src/pce/pcego/` | [retro-go](https://github.com/ducalex/retro-go) `retro-core/components/pce-go`, derived from HuExpress / Hu-Go! | GPL-2.0 (`emu16/src/pce/pcego/COPYING`); the HuExpress / Hu-Go! sources it derives from say "version 2 or (at your option) any later version", which lets it be combined with AGPL-3.0 |
+| pce-go (HuC6280, VDC/VCE, PSG, save states) | `emu16/src/pce/pcego/` | [retro-go](https://github.com/ducalex/retro-go) `retro-core/components/pce-go`, derived from HuExpress / Hu-Go! | GPL-2.0 (`emu16/src/pce/pcego/LICENSE`); the HuExpress / Hu-Go! sources it derives from say "version 2 or (at your option) any later version", which lets it be combined with AGPL-3.0 |
 | UI bitmap fonts | `emu16/src/frontend/fonts/uifont.h` | X11 misc-fixed 6x10 / 7x13 (via FabGL, via emu8) | Public domain |
 | UI text renderer, P4 display/keyboard/audio bring-up | `emu16/src/frontend/uitext.h`, `emu16/src/hal/picocalc/` | emu8 | Same author as emu16 |
 
