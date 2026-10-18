@@ -157,6 +157,9 @@ void p4InputInit() {
   xTaskCreatePinnedToCore(kbdTask, "kbd", 4096, nullptr, 4, nullptr, 0);
 }
 
+// A key typed on the PC (the console's "@key" command), queued like one from the keyboard.
+void p4InjectKey(uint8_t code, uint8_t state) { if (s_keys) sendKey(code, state); }
+
 bool hal_key_poll(KeyEvent *ev) { return s_keys && xQueueReceive(s_keys, ev, 0) == pdTRUE; }
 int  hal_battery_percent()      { return s_batPercent; }
 bool hal_battery_charging()     { return s_batCharging; }

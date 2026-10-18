@@ -1,0 +1,65 @@
+// geo_m68k_prefix.h -- emu16: renames this copy of Musashi's external symbols (m68k_* -> gm_m68k_*),
+// because the Mega Drive core links its own Musashi into the same binary. Included first by m68k.h.
+#ifndef GEO_M68K_PREFIX_H
+#define GEO_M68K_PREFIX_H
+#define m68040_fpu_op0 gm_m68040_fpu_op0
+#define m68040_fpu_op1 gm_m68040_fpu_op1
+#define m68881_mmu_ops gm_m68881_mmu_ops
+#define m68k_context_size gm_m68k_context_size
+#define m68k_cycles_remaining gm_m68k_cycles_remaining
+#define m68k_cycles_run gm_m68k_cycles_run
+#define m68k_disassemble gm_m68k_disassemble
+#define m68k_disassemble_raw gm_m68k_disassemble_raw
+#define m68k_end_timeslice gm_m68k_end_timeslice
+#define m68k_execute gm_m68k_execute
+#define m68k_get_context gm_m68k_get_context
+#define m68k_get_reg gm_m68k_get_reg
+#define m68k_get_virq gm_m68k_get_virq
+#define m68k_init gm_m68k_init
+#define m68k_is_valid_instruction gm_m68k_is_valid_instruction
+#define m68k_modify_timeslice gm_m68k_modify_timeslice
+#define m68k_pulse_bus_error gm_m68k_pulse_bus_error
+#define m68k_pulse_halt gm_m68k_pulse_halt
+#define m68k_pulse_reset gm_m68k_pulse_reset
+#define m68k_read_disassembler_16 gm_m68k_read_disassembler_16
+#define m68k_read_disassembler_32 gm_m68k_read_disassembler_32
+#define m68k_read_memory_16 gm_m68k_read_memory_16
+#define m68k_read_memory_32 gm_m68k_read_memory_32
+#define m68k_read_memory_8 gm_m68k_read_memory_8
+#define m68k_set_bkpt_ack_callback gm_m68k_set_bkpt_ack_callback
+#define m68k_set_context gm_m68k_set_context
+#define m68k_set_cpu_type gm_m68k_set_cpu_type
+#define m68k_set_fc_callback gm_m68k_set_fc_callback
+#define m68k_set_illg_instr_callback gm_m68k_set_illg_instr_callback
+#define m68k_set_instr_hook_callback gm_m68k_set_instr_hook_callback
+#define m68k_set_int_ack_callback gm_m68k_set_int_ack_callback
+#define m68k_set_irq gm_m68k_set_irq
+#define m68k_set_pc_changed_callback gm_m68k_set_pc_changed_callback
+#define m68k_set_reg gm_m68k_set_reg
+#define m68k_set_reset_instr_callback gm_m68k_set_reset_instr_callback
+#define m68k_set_tas_instr_callback gm_m68k_set_tas_instr_callback
+#define m68k_set_virq gm_m68k_set_virq
+#define m68k_write_memory_16 gm_m68k_write_memory_16
+#define m68k_write_memory_32 gm_m68k_write_memory_32
+#define m68k_write_memory_8 gm_m68k_write_memory_8
+#define m68ki_address_space gm_m68ki_address_space
+#define m68ki_aerr_address gm_m68ki_aerr_address
+#define m68ki_aerr_fc gm_m68ki_aerr_fc
+#define m68ki_aerr_write_mode gm_m68ki_aerr_write_mode
+#define m68ki_build_opcode_table gm_m68ki_build_opcode_table
+#define m68ki_bus_error_jmp_buf gm_m68ki_bus_error_jmp_buf
+#define m68ki_cpu gm_m68ki_cpu
+#define m68ki_cpu_names gm_m68ki_cpu_names
+#define m68ki_cycles gm_m68ki_cycles
+#define m68ki_disassemble_quick gm_m68ki_disassemble_quick
+#define m68ki_ea_idx_cycle_table gm_m68ki_ea_idx_cycle_table
+#define m68ki_exception_cycle_table gm_m68ki_exception_cycle_table
+#define m68ki_initial_cycles gm_m68ki_initial_cycles
+#define m68ki_instruction_jump_table gm_m68ki_instruction_jump_table
+#define m68ki_remaining_cycles gm_m68ki_remaining_cycles
+#define m68ki_shift_16_table gm_m68ki_shift_16_table
+#define m68ki_shift_32_table gm_m68ki_shift_32_table
+#define m68ki_shift_8_table gm_m68ki_shift_8_table
+#define m68ki_tracing gm_m68ki_tracing
+#define pmmu_translate_addr gm_pmmu_translate_addr
+#endif

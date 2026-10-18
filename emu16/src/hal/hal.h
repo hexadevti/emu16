@@ -38,11 +38,24 @@ struct KeyEvent {
 void     hal_init();                       // everything below is usable afterwards
 uint32_t hal_millis();
 uint32_t hal_micros();
+uint32_t hal_cycles();                     // fast free-running counter for profiling (wraps)
+uint32_t hal_cycles_per_us();
+// Work run on the other core (P4: a task on core 0; desktop: a thread), one job at a time;
+// hal_job_start waits for the previous job first. The job must not touch the display or input.
+void     hal_job_start(void (*fn)(void *), void *arg);
+void     hal_job_wait();                   // until the last job has returned
 void     hal_delay(uint32_t ms);
 void     hal_yield();                      // let other tasks / the SDL event loop run
 void     hal_log(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
 void     hal_reboot();
 void     hal_reboot_to_loader();           // esp32loader menu on the P4; quit on the desktop
+// A ROM to start at boot, asked for over the P4 console ("@run <path>"); false on the desktop.
+bool     hal_take_launch(char *path, size_t n);
+// Crash diagnostics. A breadcrumb notes what the program is doing in RAM that survives a crash
+// reboot; after one, hal_crash_report describes it (reset reason, where the CPU stopped, the
+// last breadcrumb) and returns false on a normal boot. Both are no-ops on the desktop.
+void     hal_breadcrumb(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
+bool     hal_crash_report(char *buf, size_t n);
 void    *hal_alloc_big(size_t n);          // PSRAM on the P4 (zeroed)
 void    *hal_alloc_fast(size_t n);         // internal RAM if it fits, else PSRAM (zeroed)
 void     hal_free(void *p);
@@ -79,7 +92,9 @@ void hal_audio_start(uint32_t rate);
 void hal_audio_write(const int16_t *mono, int n);
 void hal_audio_volume(int vol);            // 0..10
 void hal_audio_silence();                  // drop anything queued (menus, pauses)
-uint32_t hal_audio_wait_us();              // total time hal_audio_write() spent blocked
+// Total time the calling thread spent blocked in hal_audio_write(), plus, outside a job, in
+// hal_job_start()/hal_job_wait(): a job that writes audio paces whoever waits for it.
+uint32_t hal_audio_wait_us();
 
 // ---------------------------------------------------------------------------------------------
 // storage: plain stdio/dirent below this root

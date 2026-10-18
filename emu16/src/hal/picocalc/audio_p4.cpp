@@ -21,7 +21,10 @@ static int32_t  s_prev = 0;
 static int32_t  s_gain = 256;          // 8.8
 static int16_t  s_out[256];
 static int      s_outN = 0;
-static uint32_t s_waitUs = 0;
+static uint32_t s_waitUs[2];           // [1]: the job task's
+
+bool p4InJob();                        // system_p4.cpp
+void p4AudioWaitAdd(uint32_t us) { s_waitUs[p4InJob()] += us; }
 
 static const int16_t kVolume[11] = { 0, 16, 32, 52, 76, 104, 136, 172, 212, 256, 320 };
 
@@ -31,13 +34,13 @@ void hal_audio_volume(int v) {
   s_gain = kVolume[v];
 }
 
-void hal_audio_start(uint32_t rate) {
-  s_step = (uint32_t)(((uint64_t)rate << 16) / AUDIO_OUT_RATE);
-  s_phase = 0; s_prev = 0; s_outN = 0;
+// The channel (its DMA buffers want main SRAM) opens at boot, before the cores and the job task
+// have taken what DMA-capable memory there is; the PDM clock does not depend on the core's rate.
+static void audioOpen() {
   if (s_tx) return;
 
   i2s_chan_config_t cc = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-  cc.dma_desc_num  = 8;
+  cc.dma_desc_num  = 16;               // 46 ms: room for a drawn frame plus the sound job behind it
   cc.dma_frame_num = 128;
   cc.auto_clear    = true;             // an underrun plays silence, not the last buffer again
   esp_err_t e = i2s_new_channel(&cc, &s_tx, nullptr);
@@ -59,15 +62,22 @@ void hal_audio_start(uint32_t rate) {
     if (s_tx) { i2s_del_channel(s_tx); s_tx = nullptr; }
     return;
   }
-  hal_log("audio: PDM on GPIO%d/%d at %d Hz (from %u)", AUDIO_L_PIN, AUDIO_R_PIN, AUDIO_OUT_RATE,
-          (unsigned)rate);
+  hal_log("audio: PDM on GPIO%d/%d at %d Hz", AUDIO_L_PIN, AUDIO_R_PIN, AUDIO_OUT_RATE);
+}
+
+void p4AudioInit() { audioOpen(); }
+
+void hal_audio_start(uint32_t rate) {
+  s_step = (uint32_t)(((uint64_t)rate << 16) / AUDIO_OUT_RATE);
+  s_phase = 0; s_prev = 0; s_outN = 0;
+  audioOpen();
 }
 
 static void flushOut() {
   size_t wrote;
   const uint32_t t0 = micros();
   if (s_tx && s_outN) i2s_channel_write(s_tx, s_out, (size_t)s_outN * 2 * sizeof(int16_t), &wrote, portMAX_DELAY);
-  s_waitUs += micros() - t0;
+  p4AudioWaitAdd(micros() - t0);
   s_outN = 0;
 }
 
@@ -92,6 +102,6 @@ void hal_audio_write(const int16_t *mono, int n) {
 
 // auto_clear plays silence once the queued DMA buffers run out; nothing to drop here.
 void hal_audio_silence() { s_outN = 0; }
-uint32_t hal_audio_wait_us() { return s_waitUs; }
+uint32_t hal_audio_wait_us() { return s_waitUs[p4InJob()]; }
 
 #endif // BOARD_PICOCALC_P4

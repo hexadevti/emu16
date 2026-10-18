@@ -33,7 +33,7 @@ static int32_t       s_gain = 256;
 static std::string   s_sdRoot = EMU_DEFAULT_SD_DIR;
 static bool          s_ctrl = false, s_shift = false;
 static uint32_t      s_lastPresent = 0;
-static uint32_t      s_audioWaitUs = 0;
+static uint32_t      s_audioWaitUs[2];   // [1]: the job thread's
 
 static const auto s_t0 = std::chrono::steady_clock::now();
 
@@ -42,6 +42,52 @@ uint32_t hal_millis() {
 }
 uint32_t hal_micros() {
   return (uint32_t)std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - s_t0).count();
+}
+uint32_t hal_cycles() {
+  return (uint32_t)std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now() - s_t0).count();
+}
+uint32_t hal_cycles_per_us() { return 1000; }
+
+static SDL_sem *s_jobGo = nullptr, *s_jobIdle = nullptr;
+static void (*volatile s_jobFn)(void *) = nullptr;
+static void *volatile s_jobArg = nullptr;
+static SDL_threadID s_jobThread = 0;
+
+static bool inJob() { return s_jobThread && SDL_ThreadID() == s_jobThread; }
+
+static int jobThread(void *) {
+  s_jobThread = SDL_ThreadID();
+  for (;;) {
+    SDL_SemWait(s_jobGo);
+    s_jobFn(s_jobArg);
+    SDL_SemPost(s_jobIdle);
+  }
+  return 0;
+}
+
+void hal_job_wait() {
+  if (!s_jobIdle) return;
+  const uint32_t t0 = hal_micros();
+  SDL_SemWait(s_jobIdle);
+  SDL_SemPost(s_jobIdle);
+  s_audioWaitUs[inJob()] += hal_micros() - t0;
+}
+
+bool hal_take_launch(char *, size_t) { return false; }
+
+
+void hal_job_start(void (*fn)(void *), void *arg) {
+  if (!s_jobGo) {
+    s_jobGo = SDL_CreateSemaphore(0);
+    s_jobIdle = SDL_CreateSemaphore(1);
+    SDL_DetachThread(SDL_CreateThread(jobThread, "job", nullptr));
+  }
+  const uint32_t t0 = hal_micros();
+  SDL_SemWait(s_jobIdle);
+  s_audioWaitUs[inJob()] += hal_micros() - t0;
+  s_jobFn = fn;
+  s_jobArg = arg;
+  SDL_SemPost(s_jobGo);
 }
 void hal_delay(uint32_t ms) { hal_yield(); SDL_Delay(ms); }
 
@@ -56,6 +102,8 @@ void hal_log(const char *fmt, ...) {
 
 void hal_reboot()           { hal_log("reboot requested - exiting"); exit(0); }
 void hal_reboot_to_loader() { hal_log("loader requested - exiting"); exit(0); }
+void hal_breadcrumb(const char *, ...) {}
+bool hal_crash_report(char *, size_t) { return false; }
 void *hal_alloc_big(size_t n)  { return calloc(1, n); }
 void *hal_alloc_fast(size_t n) { return calloc(1, n); }
 void  hal_free(void *p)        { free(p); }
@@ -277,7 +325,7 @@ void hal_audio_write(const int16_t *mono, int n) {
     next += (uint32_t)((uint64_t)n * 1000000 / (s_audioRate ? s_audioRate : 44100));
     const uint32_t t0 = hal_micros();
     while ((int32_t)(next - hal_micros()) > 0) { hal_yield(); SDL_Delay(1); }
-    s_audioWaitUs += hal_micros() - t0;
+    s_audioWaitUs[inJob()] += hal_micros() - t0;
     return;
   }
   static int16_t tmp[4096];
@@ -290,12 +338,12 @@ void hal_audio_write(const int16_t *mono, int n) {
   const uint32_t limit = s_audioRate / 20 * 2;
   const uint32_t t0 = hal_micros();
   while (SDL_GetQueuedAudioSize(s_audio) > limit) { hal_yield(); SDL_Delay(1); }
-  s_audioWaitUs += hal_micros() - t0;
+  s_audioWaitUs[inJob()] += hal_micros() - t0;
   SDL_QueueAudio(s_audio, tmp, (Uint32)n * 2);
 }
 
 void hal_audio_silence() { if (s_audio) SDL_ClearQueuedAudio(s_audio); }
-uint32_t hal_audio_wait_us() { return s_audioWaitUs; }
+uint32_t hal_audio_wait_us() { return s_audioWaitUs[inJob()]; }
 
 // ------------------------------------------------------------------------------------------------
 void hal_init() {

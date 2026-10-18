@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string>
 
 // Generic pad, the union of what the 16-bit systems need. Cores map these onto their own buttons.
 enum : uint32_t {
@@ -29,6 +30,14 @@ struct EmuCore {
   bool (*saveState)(FILE *f);
   bool (*loadState)(FILE *f);
   void (*shutdown)();                          // free everything init()/loadRom() took
+  // Optional, for the ROM browser: false hides a file that matched romExts; label may be set to
+  // a name to show instead of the file name. nullptr = list every match by its file name.
+  bool (*romLabel)(const char *fileName, std::string &label);
+  // Optional: why the last init()/loadRom() failed, shown to the user. nullptr or "" = no reason.
+  const char *(*loadError)();
+  // Optional: where the time goes, one short line shown under the FPS meter. Called once a
+  // second, about the frames since the last call. nullptr = nothing to show.
+  const char *(*perfInfo)();
 };
 
 extern const EmuCore *const kCores[];

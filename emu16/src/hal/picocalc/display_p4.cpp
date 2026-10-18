@@ -22,6 +22,8 @@
 
 void picocalcBacklightOn();              // input_p4.cpp: the backlight lives on the STM32
 
+void p4CreateTask(TaskFunction_t fn, const char *name, uint32_t bytes, UBaseType_t prio, TaskHandle_t *h);  // system_p4.cpp
+
 #define P4_BOUNCE_PX 8192                // pixels per bounce buffer / per DMA transaction
 #define P4_NBUF      3                   // bounce buffers = transactions in flight
 
@@ -297,7 +299,7 @@ void p4DisplayInit() {
   s_vGo = xSemaphoreCreateBinary();
   s_vIdle = xSemaphoreCreateBinary();
   xSemaphoreGive(s_vIdle);
-  xTaskCreatePinnedToCore(videoTask, "video", 4096, nullptr, 5, nullptr, 0);
+  p4CreateTask(videoTask, "video", 4096, 5, nullptr);
 }
 
 #endif // BOARD_PICOCALC_P4

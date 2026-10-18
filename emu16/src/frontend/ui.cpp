@@ -2,6 +2,7 @@
 #include <string.h>
 #include <stdio.h>
 #include <math.h>
+#include <string>
 #include "ui.h"
 #include "uitext.h"
 #include "../hal/hal.h"
@@ -345,15 +346,46 @@ static void drawMeter(int right, int cy, int level, bool on) {
 }
 
 // ------------------------------------------------------------------------------------------------
+// Word-wraps s into lines no wider than maxW pixels in `font` (at most maxLines; a word longer
+// than a line is cut).
+static int wrapText(const char *s, uint8_t font, int maxW, std::string *lines, int maxLines) {
+  int n = 0;
+  while (s && *s && n < maxLines) {
+    while (*s == ' ') s++;
+    if (!*s) break;
+    std::string cur;
+    while (*s) {
+      const char *e = s;
+      while (*e && *e != ' ') e++;
+      std::string next = cur.empty() ? std::string(s, e) : cur + ' ' + std::string(s, e);
+      if (textWidth(next.c_str(), font) > maxW) {
+        if (cur.empty()) {                                     // one word wider than the line
+          while (!next.empty() && textWidth(next.c_str(), font) > maxW) next.pop_back();
+          cur = next;
+          s += next.size();
+        }
+        break;
+      }
+      cur = next;
+      s = e;
+      while (*s == ' ') s++;
+    }
+    lines[n++] = cur;
+  }
+  return n;
+}
+
 void message(const char *title, const char *line, uint32_t holdMs) {
-  const int w = 248, h = 74, x = (PANEL_W - w) / 2, y = (PANEL_H - h) / 2;
+  std::string lines[8];
+  const int nl = line ? wrapText(line, 3, 228, lines, 8) : 0;
+  const int w = 248, h = 74 + (nl > 1 ? (nl - 1) * 15 : 0), x = (PANEL_W - w) / 2, y = (PANEL_H - h) / 2;
   blendRound(x + 4, y + 5, w, h, 8, 0, 130);                 // shadow
   fillRoundGrad(x - 1, y - 1, w + 2, h + 2, 9, kAccent, kAccent2);
   fillRound(x + 1, y + 1, w - 2, h - 2, 7, kCard);
   text(PANEL_W / 2, y + 17, title, kText, 2, MC);
   for (int i = 0; i < 120; i++)
     fill(PANEL_W / 2 - 60 + i, y + 29, 1, 1, mix(kAccent, kAccent2, i * 256 / 120));
-  if (line) text(PANEL_W / 2, y + 50, line, kDim, 3, MC);
+  for (int i = 0; i < nl; i++) text(PANEL_W / 2, y + 50 + i * 15, lines[i].c_str(), kDim, 3, MC);
   present();
   if (holdMs) hal_delay(holdMs);
 }

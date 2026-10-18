@@ -27,6 +27,8 @@ extern "C" {
 #define MD_AUDIO_BUF 1200      // one frame of samples: 888 NTSC, ~1061 PAL (Gwenesis' 1056 is short)
 
 extern "C" {
+void *md_alloc_fast(size_t n) { return hal_alloc_fast(n); }   // ym2612.c's tables
+void  md_free(void *p)        { hal_free(p); }
 int system_clock;
 int16_t gwenesis_sn76489_buffer[MD_AUDIO_BUF];
 int sn76489_index;
@@ -128,6 +130,7 @@ static void md_shutdown() {
   hal_free(s_rom);
   s_rom = nullptr;
   ROM_DATA = nullptr;
+  YM2612FreeTables();                   // 46 KB of internal RAM back for the other cores
 }
 
 // .smd dumps: a 512-byte header, then 16 KB blocks holding the odd bytes in their first half and
@@ -140,7 +143,8 @@ static bool isSmd(const char *path, const uint8_t *hdr, long size) {
 }
 
 static void deinterleaveSmd(uint8_t *rom, long size) {
-  static uint8_t blk[16384];
+  uint8_t *blk = (uint8_t *)hal_alloc_big(16384);   // not a static: internal RAM is scarce
+  if (!blk) return;
   for (long off = 0; off < size; off += 16384) {
     memcpy(blk, rom + off, 16384);
     for (int i = 0; i < 8192; i++) {
@@ -148,6 +152,7 @@ static void deinterleaveSmd(uint8_t *rom, long size) {
       rom[off + i * 2]     = blk[8192 + i];
     }
   }
+  hal_free(blk);
 }
 
 static void detectRegion() {

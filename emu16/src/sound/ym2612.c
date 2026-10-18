@@ -206,12 +206,14 @@ void ym_log(const char *subs, const char *fmt, ...) {
 *   TL_RES_LEN - sinus resolution (X axis)
 */
 #define TL_TAB_LEN (13*2*TL_RES_LEN)
-static signed int tl_tab[TL_TAB_LEN];
+/* emu16: tl_tab, sin_tab and lfo_pm_table are on the heap (YM2612Init) and freed with the Mega
+   Drive core (YM2612FreeTables), so other cores get that internal RAM */
+static signed int *tl_tab;
 
 #define ENV_QUIET    (TL_TAB_LEN>>3)
 
 /* sin waveform table in 'decibel' scale */
-static unsigned int sin_tab[SIN_LEN] ;
+static unsigned int *sin_tab; /* [SIN_LEN], emu16: heap */
 
 /* sustain level table (3dB per step) */
 /* bit0, bit1, bit2, bit3, bit4, bit5, bit6 */
@@ -506,9 +508,9 @@ static const UINT8 lfo_pm_output[7*8][8]={
 
 /* all 128 LFO PM waveforms */
 #if GW_TARGET
-static UINT8 lfo_pm_table[128*8*16];  /* 128 combinations of 7 bits meaningful (of F-NUMBER), 8 LFO depths, 32 LFO output levels per one depth */
+static UINT8 *lfo_pm_table; /* [128*8*16], emu16: heap */  /* 128 combinations of 7 bits meaningful (of F-NUMBER), 8 LFO depths, 32 LFO output levels per one depth */
 #else
-static INT32 lfo_pm_table[128*8*32] ;  /* 128 combinations of 7 bits meaningful (of F-NUMBER), 8 LFO depths, 32 LFO output levels per one depth */
+static INT32 *lfo_pm_table; /* [128*8*32], emu16: heap */  /* 128 combinations of 7 bits meaningful (of F-NUMBER), 8 LFO depths, 32 LFO output levels per one depth */
 #endif
 
 /* register number to channel number , slot offset */
@@ -1957,14 +1959,28 @@ static void init_tables(void)
 }
 
 /* initialize ym2612 emulator */
-void YM2612Init(void) {
-  static unsigned init_table_done = 0;
+void *md_alloc_fast(size_t n);  /* emu16: md_core.cpp */
+void md_free(void *p);
 
+void YM2612Init(void) {
   memset(&ym2612, 0, sizeof(YM2612));
-  if (init_table_done == 0) {
+  if (!tl_tab) { /* emu16: was a static flag, the tables were static arrays */
+    tl_tab = md_alloc_fast(TL_TAB_LEN * sizeof(*tl_tab));
+    sin_tab = md_alloc_fast(SIN_LEN * sizeof(*sin_tab));
+#if GW_TARGET
+    lfo_pm_table = md_alloc_fast(128*8*16 * sizeof(*lfo_pm_table));
+#else
+    lfo_pm_table = md_alloc_fast(128*8*32 * sizeof(*lfo_pm_table));
+#endif
     init_tables();
-    init_table_done = 1;
   }
+}
+
+/* emu16: gives the tables back (the next YM2612Init builds them again) */
+void YM2612FreeTables(void) {
+  md_free(tl_tab); tl_tab = NULL;
+  md_free(sin_tab); sin_tab = NULL;
+  md_free(lfo_pm_table); lfo_pm_table = NULL;
 }
 
 /* reset OPN registers */

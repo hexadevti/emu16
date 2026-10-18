@@ -8,7 +8,10 @@ emu8, and its P4 display, keyboard, audio and SD bring-up come from emu8.
 |---|---|---|
 | Sega Mega Drive / Genesis | first core | Gwenesis (Musashi 68000, Z80, YM2612, SN76489) |
 | PC Engine / TurboGrafx-16 | new, HuCards only | pce-go from retro-go (HuC6280, VDC/VCE, PSG) |
-| SNES, Neo Geo, Amiga 500 | planned | — |
+| Neo Geo (AES / MVS cartridges) | new | Geolith (Musashi 68000, Z80, ymfm YM2610, LSPC), with lithogen for MAME .zip sets |
+| SNES | planned | — |
+
+The Amiga 500 is a separate firmware, [pico-amiga](../pico-amiga), because its emulator is GPL-2.
 
 ## Using it
 
@@ -16,6 +19,19 @@ Put ROMs on the SD card under `/roms/md/` (`.md`, `.gen`, `.bin`, `.smd`) and `/
 At boot, pick the system, then the game. On the PC Engine, F3 is button II, F4 is button I, and F5 or
 Space is Select. CD-ROM, SuperGrafx and the 512-pixel video mode, which is cropped to 352, are not
 supported.
+
+**Neo Geo.** Put MAME romsets under `/roms/neogeo/` as they come (`<game>.zip`), with the MAME BIOS
+set `neogeo.zip` in `/roms/` (or in `/roms/neogeo/`). A clone set also needs its parent's zip there. Sets are
+converted in memory when loaded, encrypted ones included, and nothing is written to the card;
+`.neo` files work too. The list shows game titles and hides zips that aren't Neo Geo games (such as
+the BIOS). Games run on the AES (home) BIOS, and switch to MVS (arcade) for MVS-only sets. Keys:
+F3, F4, F5 and Caps are A, B, C and D, Space inserts a coin (MVS), Enter is Start and Del is
+Select. Memory card, cartridge SRAM and MVS backup RAM are saved next to the zip (`.mcr`, `.srm`,
+`.nv`). **The P4 has 32 MB of PSRAM, so games whose ROMs add up to more than about 28 MB don't
+fit.** That includes most later titles (KOF '96 onwards, Metal Slug 2 onwards, Garou, and
+encrypted sets, whose graphics are decrypted through a second copy). Games up to about 16 MB,
+such as Aero Fighters 2, Street Hoop and Thrash Rally, fit easily. 26 MB sets such as Metal Slug
+and Samurai Shodown 2 are at the limit. The desktop build has no limit.
 
 | Key | In game | In menus |
 |---|---|---|
@@ -78,6 +94,7 @@ emu16/src/cpu/           CPU cores shared between systems (m68k, z80)
 emu16/src/sound/         sound chips (YM2612, SN76489)
 emu16/src/md/            Mega Drive: Gwenesis machine + md_core.cpp glue
 emu16/src/pce/           PC Engine: pce-go machine + pce_core.cpp glue
+emu16/src/neogeo/        Neo Geo: geolith/, lithogen/ (zip sets), miniz/ + neogeo_core.cpp glue
 ```
 
 To add a system, write `src/<system>/<system>_core.cpp` exporting an `EmuCore`, and add it to

@@ -27,6 +27,7 @@ static bool extMatches(const char *name, const char *exts) {
 struct Entry {
   std::string name;
   bool dir;
+  std::string label;   // the core's name for the file; empty = the file name
 };
 
 static std::string parentOf(const std::string &p) {
@@ -49,16 +50,21 @@ bool browseRom(const EmuCore &core, std::string &outPath) {
       while (dirent *e = readdir(d)) {
         if (e->d_name[0] == '.') continue;
         const bool isD = isDir(dir + "/" + e->d_name);
-        if (isD || extMatches(e->d_name, core.romExts)) entries.push_back({ e->d_name, isD });
+        if (isD) { entries.push_back({ e->d_name, true, {} }); continue; }
+        if (!extMatches(e->d_name, core.romExts)) continue;
+        std::string label;
+        if (core.romLabel && !core.romLabel(e->d_name, label)) continue;
+        entries.push_back({ e->d_name, false, label });
       }
       closedir(d);
     }
     std::sort(entries.begin(), entries.end(), [](const Entry &a, const Entry &b) {
       if (a.dir != b.dir) return a.dir;
-      return strcasecmp(a.name.c_str(), b.name.c_str()) < 0;
+      const std::string &x = a.label.empty() ? a.name : a.label, &y = b.label.empty() ? b.name : b.label;
+      return strcasecmp(x.c_str(), y.c_str()) < 0;
     });
     const bool atRoot = dir == root;
-    if (!atRoot) entries.insert(entries.begin(), { "..", true });
+    if (!atRoot) entries.insert(entries.begin(), { "..", true, {} });
 
     // files show without their extension, which goes in the value column as a tag
     std::vector<std::string> labels(entries.size()), tags(entries.size());
@@ -74,7 +80,7 @@ bool browseRom(const EmuCore &core, std::string &outPath) {
         items[i] = { labels[i].c_str(), nullptr, ui::ICON_FOLDER };
       } else {
         const size_t dot = e.name.find_last_of('.');
-        labels[i] = e.name.substr(0, dot);
+        labels[i] = e.label.empty() ? e.name.substr(0, dot) : e.label;
         for (size_t c = dot + 1; c < e.name.size(); c++) tags[i] += (char)toupper((unsigned char)e.name[c]);
         items[i] = { labels[i].c_str(), tags[i].c_str(), ui::ICON_CART };
       }
