@@ -22,16 +22,18 @@ supported.
 
 **Neo Geo.** Put MAME romsets under `/roms/neogeo/` as they come (`<game>.zip`), with the MAME BIOS
 set `neogeo.zip` in `/roms/` (or in `/roms/neogeo/`). A clone set also needs its parent's zip there. Sets are
-converted in memory when loaded, encrypted ones included, and nothing is written to the card;
-`.neo` files work too. The list shows game titles and hides zips that aren't Neo Geo games (such as
+converted in memory when loaded, encrypted ones included; `.neo` files work too. The list shows game titles and hides zips that aren't Neo Geo games (such as
 the BIOS). Games run on the AES (home) BIOS, and switch to MVS (arcade) for MVS-only sets. Keys:
 F3, F4, F5 and Caps are A, B, C and D, Space inserts a coin (MVS), Enter is Start and Del is
 Select. Memory card, cartridge SRAM and MVS backup RAM are saved next to the zip (`.mcr`, `.srm`,
-`.nv`). **The P4 has 32 MB of PSRAM, so games whose ROMs add up to more than about 28 MB don't
-fit.** That includes most later titles (KOF '96 onwards, Metal Slug 2 onwards, Garou, and
-encrypted sets, whose graphics are decrypted through a second copy). Games up to about 16 MB,
-such as Aero Fighters 2, Street Hoop and Thrash Rally, fit easily. 26 MB sets such as Metal Slug
-and Samurai Shodown 2 are at the limit. The desktop build has no limit.
+`.nv`). **The P4 has 32 MB of PSRAM**, of which about 28 MB is left for a game. A set bigger than
+that loads in low-memory mode if it isn't encrypted: graphics that repeat (in 8x8 quarter tiles)
+are kept once, and the sound samples are written beside the zip on the first start
+(`<game>.v1cache`, and `.v2cache` for sets with two sample ROMs) and read from the card as they
+play. Art of Fighting 3, 37 MB of ROMs, loads in about 26 MB this way. Encrypted sets (KOF '99
+onwards, Metal Slug 3 onwards, Garou), whose graphics are decrypted through a second copy, still
+don't fit, and neither does a set that stays too big after this. The desktop build has no limit;
+`EMU16_NG_LOWMEM=1` forces low-memory mode there.
 
 | Key | In game | In menus |
 |---|---|---|

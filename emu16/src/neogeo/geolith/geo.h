@@ -174,6 +174,13 @@ typedef struct _romdata_t {
     // C ROM (Graphics ROM for sprites)
     uint8_t *c;
     size_t csz;
+
+    /* emu16: low-memory mode. With cidx, c holds distinct 32-byte chunks
+       and byte a of the C ROM is c[cidx[a >> 5] + (a & 31)]. With vread,
+       the V ROMs are not in memory and it returns their bytes (bus 0 for
+       ADPCM-A, 1 for ADPCM-B). */
+    const uint32_t *cidx;
+    uint8_t (*vread)(unsigned bus, uint32_t address);
 } romdata_t;
 
 romdata_t* geo_romdata_ptr(void);
@@ -197,6 +204,9 @@ void geo_exec(void);
 enum geo_prof { GEO_PROF_M68K, GEO_PROF_Z80, GEO_PROF_YM, GEO_PROF_LSPC, GEO_PROF_MIX, GEO_PROF_N };
 extern uint32_t geo_prof[GEO_PROF_N];
 uint32_t ngc_cycles(void);
+void geo_dgptr(void **o);
+void geo_dgswap(void *ext);
+extern uint32_t geo_dg[8], geo_dgmode; // DIAG: lspc spr/fix/bd cycles, sprites visited/in range/drawn, lines
 void geo_init(void);
 void geo_deinit(void);
 void geo_reset(int);

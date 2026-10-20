@@ -59,6 +59,7 @@ bool     hal_crash_report(char *buf, size_t n);
 void    *hal_alloc_big(size_t n);          // PSRAM on the P4 (zeroed)
 void    *hal_alloc_fast(size_t n);         // internal RAM if it fits, else PSRAM (zeroed)
 void     hal_free(void *p);
+size_t   hal_free_big();                   // what hal_alloc_big has left (SIZE_MAX: no limit)
 int      hal_battery_percent();            // -1 = unknown
 bool     hal_battery_charging();
 

@@ -1,7 +1,7 @@
 // neogeo_core.cpp -- the Neo Geo (AES/MVS cartridge) core: Geolith (68000 + Z80 + YM2610 + LSPC)
 // behind EmuCore. Games load straight from MAME .zip romsets: lithogen converts the set in
-// memory (decrypting where needed) and its region buffers become Geolith's ROM data, so nothing
-// is written to the SD card. .neo files load as they are. The BIOS comes from the MAME
+// memory (decrypting where needed) and its region buffers become Geolith's ROM data (a set too
+// big for that goes in low-memory mode, below). .neo files load as they are. The BIOS comes from the MAME
 // neogeo.zip in /roms (or /roms/neogeo), which lithogen also searches for BIOS-side files; a
 // clone set needs its parent's zip beside it.
 #include <stdio.h>
@@ -11,6 +11,7 @@
 #include <strings.h>
 #include <ctype.h>
 #include <string>
+#include <unistd.h>
 #include "../../core.h"
 #include "../hal/hal.h"
 #include "../frontend/settings.h"
@@ -170,6 +171,124 @@ static void savesFlush() {
 }
 
 // ------------------------------------------------------------------------------------------------
+// low-memory mode: a set too big for the PSRAM keeps its C ROM as distinct 32-byte chunks (see
+// lithogen_image.cidx) and its V ROMs (ADPCM samples) in <rom>.v1cache/.v2cache beside the zip,
+// written on the first start, read through a small block cache by the YM2610 job
+// ------------------------------------------------------------------------------------------------
+#define NG_MEM_SPARE  (2u << 20)            // PSRAM a game must leave (V cache, job, the rest)
+#define NG_VBLOCK_BITS 13                   // 8 KB blocks
+#define NG_VSLOTS     128                   // 1 MB of them
+#define NG_VWAYS      4                     // in sets of 4, least recently used out
+static const uint32_t kVMagic = 0x56363145; // "E16V"
+struct VCacheHeader { uint32_t magic, key, size, zero; };
+
+static std::string s_vBase;                 // <rom> without its extension
+static FILE    *s_vFile[2];
+static uint8_t *s_vCache;
+static uint32_t s_vTag[NG_VSLOTS], s_vUse[NG_VSLOTS], s_vClock;
+static uint32_t s_vRegion[2], s_vOff[2];    // per bus: spilled region and offset in it
+static uint32_t s_vMisses;
+static uint32_t *s_dIdx, s_dTick, s_dDrawn, s_dFr;  // DIAG
+static uint64_t s_d68[2], s_dz[2];  // DIAG
+static uint32_t s_dWall, s_dWait, s_dJobWall, s_dJobWait, s_dSd, s_dSdMax;  // DIAG
+
+static std::string vPath(int region) { return s_vBase + (region ? ".v2cache" : ".v1cache"); }
+
+static bool vValid(FILE *f, uint32_t key) {
+  VCacheHeader h;
+  if (fseek(f, 0, SEEK_SET) || fread(&h, sizeof(h), 1, f) != 1) return false;
+  if (h.magic != kVMagic || h.key != key) return false;
+  fseek(f, 0, SEEK_END);
+  return ftell(f) == (long)(sizeof(h) + h.size);
+}
+
+// lithogen's v_spill: is the cache there, or store it
+static int vSpill(int region, uint32_t key, const uint8_t *data, uint32_t size, void *) {
+  const std::string p = vPath(region);
+  if (!data) {
+    FILE *f = fopen(p.c_str(), "rb");
+    const bool ok = f && vValid(f, key);
+    if (f) fclose(f);
+    if (ok) hal_log("neogeo: V%d from %s", region + 1, p.c_str());
+    return ok;
+  }
+  hal_breadcrumb("neogeo: writing %s", p.c_str());
+  FILE *f = fopen(p.c_str(), "wb");
+  if (!f) { hal_log("neogeo: cannot write %s", p.c_str()); return 0; }
+  VCacheHeader h = { 0, key, size, 0 };     // the magic goes in once the data is all there
+  bool ok = fwrite(&h, sizeof(h), 1, f) == 1 && fwrite(data, 1, size, f) == size;
+  h.magic = kVMagic;
+  ok = ok && !fseek(f, 0, SEEK_SET) && fwrite(&h, sizeof(h), 1, f) == 1;
+  ok = !fclose(f) && ok;
+  if (ok) hal_log("neogeo: wrote V%d (%u KB) to %s", region + 1, (unsigned)(size >> 10), p.c_str());
+  else { hal_log("neogeo: cannot write %s", p.c_str()); remove(p.c_str()); }
+  return ok;
+}
+
+
+static uint32_t s_vReads;                   // blocks read since the game started
+
+static void vClose() {
+  if (s_vCache) hal_log("neogeo: %u V blocks read from the SD card", (unsigned)s_vReads);
+  for (FILE *&f : s_vFile) if (f) { fclose(f); f = nullptr; }
+  hal_free(s_vCache);
+  s_vCache = nullptr;
+}
+
+static void vFill(unsigned slot, uint32_t region, uint32_t blk) {
+  uint8_t *dst = s_vCache + ((size_t)slot << NG_VBLOCK_BITS);
+  size_t got = 0;
+  FILE *f = s_vFile[region];
+  const uint32_t td = hal_micros();  // DIAG
+  // the file descriptor, not stdio: an unbuffered FILE reads a byte at a time on the P4 (180 ms
+  // a block)
+  if (f && lseek(fileno(f), (off_t)(sizeof(VCacheHeader) + ((size_t)blk << NG_VBLOCK_BITS)), SEEK_SET) >= 0) {
+    const int r = read(fileno(f), dst, 1u << NG_VBLOCK_BITS);
+    got = r > 0 ? (size_t)r : 0;
+  }
+  if (got < (1u << NG_VBLOCK_BITS)) memset(dst + got, 0, (1u << NG_VBLOCK_BITS) - got);
+  { const uint32_t d = hal_micros() - td; s_dSd += d; if (d > s_dSdMax) s_dSdMax = d; }  // DIAG
+  s_vTag[slot] = blk << 1 | region;
+  s_vMisses++;
+  s_vReads++;
+}
+
+// romdata_t.vread, on the YM2610 job's core
+static uint8_t vRead(unsigned bus, uint32_t a) {
+  const uint32_t region = s_vRegion[bus];
+  a += s_vOff[bus];
+  const uint32_t blk = a >> NG_VBLOCK_BITS, tag = blk << 1 | region;
+  unsigned slot = ((blk + region * 7) & (NG_VSLOTS / NG_VWAYS - 1)) * NG_VWAYS, i = 0;
+  while (i < NG_VWAYS && s_vTag[slot + i] != tag) i++;
+  if (i == NG_VWAYS) {
+    i = 0;
+    for (unsigned k = 1; k < NG_VWAYS; k++) if (s_vUse[slot + k] < s_vUse[slot + i]) i = k;
+    vFill(slot + i, region, blk);
+  }
+  slot += i;
+  s_vUse[slot] = ++s_vClock;
+  return s_vCache[((size_t)slot << NG_VBLOCK_BITS) | (a & ((1u << NG_VBLOCK_BITS) - 1))];
+}
+
+static bool vOpen() {
+  s_vCache = (uint8_t *)hal_alloc_big((size_t)NG_VSLOTS << NG_VBLOCK_BITS);
+  if (!s_vCache) { fail("Not enough memory for the sound cache"); return false; }
+  memset(s_vTag, 0xff, sizeof(s_vTag));
+  memset(s_vUse, 0, sizeof(s_vUse));
+  s_vClock = 0;
+  const bool two = s_img.v2sz && s_img.v2region;
+  for (int r = 0; r < (two ? 2 : 1); r++) {
+    const std::string p = vPath(r);
+    if (!(s_vFile[r] = fopen(p.c_str(), "rb"))) { fail("Cannot open %s", p.c_str()); return false; }
+  }
+  s_vRegion[0] = 0; s_vOff[0] = 0;
+  if (s_img.v2sz) { s_vRegion[1] = (uint32_t)s_img.v2region; s_vOff[1] = s_img.v2off; }
+  else { s_vRegion[1] = 0; s_vOff[1] = 0; }
+  s_vMisses = s_vReads = 0;
+  return true;
+}
+
+// ------------------------------------------------------------------------------------------------
 // loading
 // ------------------------------------------------------------------------------------------------
 static bool hasExt(const char *path, const char *ext) {
@@ -178,6 +297,10 @@ static bool hasExt(const char *path, const char *ext) {
 }
 
 static void freeGame() {
+  vClose();
+  geo_romdata_ptr()->cidx = nullptr;
+  hal_free(s_dIdx); s_dIdx = nullptr;  // DIAG
+  geo_romdata_ptr()->vread = nullptr;
   hal_free(s_neo);
   s_neo = nullptr;
   lithogen_image_free(&s_img);
@@ -238,6 +361,14 @@ static bool loadZip(const char *path) {
   beside = (slash == std::string::npos ? std::string() : beside.substr(0, slash + 1)) + "neogeo.zip";
   const char *aux[] = { s_biosPath.c_str() };
   if (strcasecmp(beside.c_str(), s_biosPath.c_str())) { opt.aux_zips = aux; opt.num_aux_zips = 1; }
+  // a set bigger than what is left goes in low-memory mode (EMU16_NG_LOWMEM=1 forces it)
+  const size_t avail = hal_free_big();
+  if (getenv("EMU16_NG_LOWMEM")) opt.mem_avail = 1;
+  else if (FILE *df = fopen((std::string(path, hasExt(path, ".zip") ? strlen(path) - 4 : strlen(path)) + ".lowmem").c_str(), "rb")) { fclose(df); opt.mem_avail = 1; }  // DIAG
+  else if (avail != SIZE_MAX) opt.mem_avail = avail > NG_MEM_SPARE * 2 ? avail - NG_MEM_SPARE : 1;
+  s_vBase = path;
+  if (hasExt(path, ".zip")) s_vBase.erase(s_vBase.size() - 4);
+  opt.v_spill = vSpill;
   lithogen_report rep;
   const uint32_t t0 = hal_millis();
   hal_breadcrumb("neogeo: converting %s", path);
@@ -251,6 +382,12 @@ static bool loadZip(const char *path) {
           s_img.title ? s_img.title : "?", (unsigned)s_img.ngh, (unsigned)(hal_millis() - t0),
           (unsigned)(s_img.psz >> 10), (unsigned)(s_img.ssz >> 10), (unsigned)(s_img.msz >> 10),
           (unsigned)(s_img.v1sz >> 10), (unsigned)(s_img.v2sz >> 10), (unsigned)(s_img.csz >> 10));
+  if (s_img.cidx)
+    hal_log("neogeo: low-memory mode: C in %u KB of distinct chunks%s", (unsigned)(s_img.cpoolsz >> 10),
+            s_img.vspill ? ", V from the SD card" : "");
+  else if (s_img.vspill)
+    hal_log("neogeo: low-memory mode: V from the SD card");
+  if (s_img.vspill && !vOpen()) return false;
 
   romdata_t *rd = geo_romdata_ptr();
   rd->p = s_img.p;   rd->psz = s_img.psz;
@@ -260,6 +397,11 @@ static bool loadZip(const char *path) {
   rd->v2 = s_img.v2 ? s_img.v2 : s_img.v1;
   rd->v2sz = s_img.v2 ? s_img.v2sz : s_img.v1sz;
   rd->c = s_img.c;   rd->csz = s_img.csz;
+  rd->cidx = s_img.cidx;
+  if (!s_img.cidx && (s_dIdx = (uint32_t *)hal_alloc_big(s_img.csz / 8)))  // DIAG: identity index
+    for (uint32_t i = 0; i < s_img.csz / 32; i++) s_dIdx[i] = i * 32;
+  rd->vread = s_img.vspill ? vRead : nullptr;
+  if (s_img.vspill && !s_img.v2sz) rd->v2sz = s_img.v1sz;
   hal_breadcrumb("neogeo: setting up NGH %03X", (unsigned)s_img.ngh);
   if (geo_neo_setup(s_img.ngh)) return true;
   fail("Geolith does not support this game (NGH %03X)", (unsigned)s_img.ngh);
@@ -318,6 +460,14 @@ static bool ngc_loadRom(const char *path) {
   }
 
   s_err.clear();                            // the AES attempt may have failed first
+  {
+    // the sprite tiles drawn as they come: decoded from bitplanes once, here (see
+    // geo_lspc_c_predecode)
+    romdata_t *rd = geo_romdata_ptr();
+    const uint32_t t = hal_millis();
+    geo_lspc_c_predecode(rd->c, rd->cidx ? s_img.cpoolsz : rd->csz);
+    hal_log("neogeo: C ROM decoded in %u ms", (unsigned)(hal_millis() - t));
+  }
   geo_mixer_set_buffer(s_mix);
   geo_mixer_set_callback(mixerOut);
   geo_input_set_callback(0, pollJoystick);
@@ -365,6 +515,65 @@ static void finishFrame(uint16_t *fb) {
 // Profile: geo_exec's own buckets, plus the whole frame and the other core's job (its time, less
 // the audio wait), since perfInfo.
 extern "C" uint32_t ngc_cycles(void) { return hal_cycles(); }
+
+// DIAG: memory / code placement micro-benchmark, cycles per iteration
+#ifdef BOARD_PICOCALC_P4
+#include "esp_attr.h"
+#define DG_TCM TCM_DRAM_ATTR
+#define DG_IRAM IRAM_ATTR
+#else
+#define DG_TCM
+#define DG_IRAM
+#endif
+static uint32_t s_bInt[256];
+DG_TCM static uint32_t s_bTcm[256];
+__attribute__((noinline)) static float bDep(volatile uint32_t *p) {
+  const uint32_t t = hal_cycles(); uint32_t i = 0;
+  for (int k = 0; k < 100000; k++) i = p[i];
+  return (hal_cycles() - t + (i & 0)) / 100000.f;
+}
+__attribute__((noinline)) static float bInd(volatile uint32_t *p) {
+  const uint32_t t = hal_cycles(); uint32_t a = 0;
+  for (int k = 0; k < 100000; k++) a += p[k & 255];
+  return (hal_cycles() - t + (a & 0)) / 100000.f;
+}
+__attribute__((noinline)) static float bSt(volatile uint32_t *p) {
+  const uint32_t t = hal_cycles();
+  for (int k = 0; k < 100000; k++) p[k & 255] = k;
+  return (hal_cycles() - t) / 100000.f;
+}
+__attribute__((noinline)) static float bAlu() {
+  const uint32_t t = hal_cycles(); volatile uint32_t o; uint32_t i = 1;
+  for (int k = 0; k < 100000; k++) i = ((i << 3) ^ (i >> 5)) + k;
+  o = i; (void)o;
+  return (hal_cycles() - t) / 100000.f;
+}
+__attribute__((noinline)) DG_IRAM static float bAluI() {
+  const uint32_t t = hal_cycles(); volatile uint32_t o; uint32_t i = 1;
+  for (int k = 0; k < 100000; k++) i = ((i << 3) ^ (i >> 5)) + k;
+  o = i; (void)o;
+  return (hal_cycles() - t) / 100000.f;
+}
+__attribute__((noinline)) DG_IRAM static float bDepI(volatile uint32_t *p) {
+  const uint32_t t = hal_cycles(); uint32_t i = 0;
+  for (int k = 0; k < 100000; k++) i = p[i];
+  return (hal_cycles() - t + (i & 0)) / 100000.f;
+}
+static void dgBench() {
+  uint32_t *ext = (uint32_t *)hal_alloc_big(1024), *fst = (uint32_t *)hal_alloc_fast(1024);
+  uint32_t *w[4] = { s_bInt, s_bTcm, ext, fst };
+  const char *nm[4] = { "int", "tcm", "psram", "fast" };
+  for (int j = 0; j < 4; j++) {
+    if (!w[j]) continue;
+    for (int i = 0; i < 256; i++) w[j][i] = (i + 1) & 255;
+    bDep(w[j]);
+    const float d = bDep(w[j]), di = bDepI(w[j]), n = bInd(w[j]), st = bSt(w[j]);
+    for (int i = 0; i < 256; i++) w[j][i] = (i + 1) & 255;
+    hal_log("DIAG bench %s %p: dep %.2f depIRAM %.2f ind %.2f st %.2f", nm[j], (void *)w[j], d, di, n, st);
+  }
+  hal_log("DIAG bench alu %.2f aluIRAM %.2f", bAlu(), bAluI());
+  hal_free(ext); hal_free(fst);
+}
 static uint32_t s_profFrame, s_profVideo, s_profFrames;
 static volatile uint32_t s_profJob;
 
@@ -372,8 +581,9 @@ static volatile uint32_t s_profJob;
 static void (*s_jobFn)(void *);
 static void *s_jobArg;
 static void jobRun(void *) {
-  const uint32_t t0 = hal_cycles(), w0 = hal_audio_wait_us();
+  const uint32_t t0 = hal_cycles(), w0 = hal_audio_wait_us(), u0 = hal_micros();
   s_jobFn(s_jobArg);
+  s_dJobWall += hal_micros() - u0; s_dJobWait += hal_audio_wait_us() - w0;  // DIAG
   s_profJob += hal_cycles() - t0 - (hal_audio_wait_us() - w0) * hal_cycles_per_us();
 }
 extern "C" void ngc_job_start(void (*fn)(void *), void *arg) {
@@ -385,7 +595,7 @@ extern "C" void ngc_job_start(void (*fn)(void *), void *arg) {
 extern "C" void ngc_job_wait(void) { hal_job_wait(); }
 
 static const char *ngc_perfInfo() {
-  static char b[80];
+  static char b[200];
   const uint32_t n = s_profFrames ? s_profFrames : 1, perMs = hal_cycles_per_us() * 1000;
   auto ms = [&](uint64_t cyc) { return (float)cyc / perMs / n; };
   const float m68k = ms(geo_prof[GEO_PROF_M68K]), z80 = ms(geo_prof[GEO_PROF_Z80]);
@@ -393,8 +603,27 @@ static const char *ngc_perfInfo() {
   // GEO_PROF_MIX is the hand-over to the other core, mostly waiting for it (which paces us)
   float other = ms(s_profFrame) - m68k - z80 - ym - video - ms(geo_prof[GEO_PROF_MIX]);
   if (other < 0) other = 0;
-  snprintf(b, sizeof(b), "68k %.1f z80 %.1f fm %.1f vid %.1f etc %.1f c0 %.1f",
-           m68k, z80, ym, video, other, ms(s_profJob));
+  const int len = snprintf(b, sizeof(b), "68k %.1f z80 %.1f fm %.1f vid %.1f etc %.1f c0 %.1f",
+                          m68k, z80, ym, video, other, ms(s_profJob));
+  if (s_vCache && len > 0 && len < (int)sizeof(b))  // low-memory mode: V blocks read per frame
+    snprintf(b + len, sizeof(b) - len, " vr %.1f", (float)s_vMisses / n);
+  {  // DIAG
+    const int l2 = (int)strlen(b);
+    // per drawn frame: sprites, fix, line out, finishFrame, the 68K's time; sprites per frame
+    // visited / on the line / with opaque pixels; the A/B C index; slowest SD read
+    static bool dOnce;  // DIAG
+    if (!dOnce) { dOnce = true; dgBench(); void *o[5]; geo_dgptr(o); hal_log("DIAG lspc %p pal %p vbuf %p l0 %p lb %p", o[0], o[1], o[2], o[3], o[4]); }
+    const uint32_t dn = s_dDrawn ? s_dDrawn : 1;
+    auto dms = [&](uint64_t cyc) { return (float)cyc / perMs / dn; };
+    snprintf(b + l2, sizeof(b) - l2, "\nspr %.1f fix %.1f bd %.1f fin %.1f 68k d%.1f s%.1f z80 d%.1f s%.1f sd%.0f",
+             dms(geo_dg[0]), dms(geo_dg[1]), dms(geo_dg[2]), dms(s_profVideo),
+             dms(s_d68[1]), (float)s_d68[0] / perMs / (s_dFr - dn ? s_dFr - dn : 1),
+             dms(s_dz[1]), (float)s_dz[0] / perMs / (s_dFr - dn ? s_dFr - dn : 1), s_dSdMax / 1000.f);
+    s_d68[0] = s_d68[1] = s_dz[0] = s_dz[1] = 0; s_dFr = 0;
+    s_dWall = s_dWait = s_dJobWall = s_dJobWait = s_dSd = s_dSdMax = s_dDrawn = 0;
+    memset(geo_dg, 0, sizeof(geo_dg));
+  }
+  s_vMisses = 0;
   memset(geo_prof, 0, sizeof(geo_prof));
   s_profFrame = s_profVideo = s_profFrames = 0;
   s_profJob = 0;
@@ -402,19 +631,23 @@ static const char *ngc_perfInfo() {
 }
 
 static void ngc_runFrame(bool draw) {
-  const uint32_t t0 = hal_cycles();
+  const uint32_t t0 = hal_cycles(), du0 = hal_micros(), dw0 = hal_audio_wait_us();  // DIAG
   uint16_t *fb = hal_video_back();
   // line n goes to row n - 8; the LSPC only writes lines 8-247
   if (draw) geo_lspc_set_buffer(fb - NG_FIRST_LINE * SCREEN_W);
   geo_lspc_set_skip_render(!draw);
+  const uint64_t d68 = geo_prof[GEO_PROF_M68K], dz = geo_prof[GEO_PROF_Z80];  // DIAG
   geo_exec();                               // the mixer callback writes this frame's audio
+  s_d68[draw] += geo_prof[GEO_PROF_M68K] - d68; s_dz[draw] += geo_prof[GEO_PROF_Z80] - dz; s_dFr++;  // DIAG
   if (draw) {
+    s_dDrawn++;  // DIAG
     const uint32_t tv = hal_cycles();
     finishFrame(fb);
     s_profVideo += hal_cycles() - tv;
   }
   if (++s_saveTick >= NG_SAVE_EVERY) { s_saveTick = 0; savesFlush(); }
   s_profFrame += hal_cycles() - t0;
+  s_dWall += hal_micros() - du0; s_dWait += hal_audio_wait_us() - dw0;  // DIAG
   s_profFrames++;
 }
 
@@ -441,6 +674,8 @@ static void ngc_shutdown() {
   freeGame();
   romdata_t *rd = geo_romdata_ptr();
   rd->p = rd->s = rd->m = rd->v1 = rd->v2 = rd->c = nullptr;
+  rd->cidx = nullptr;
+  rd->vread = nullptr;
   rd->psz = rd->ssz = rd->msz = rd->v1sz = rd->v2sz = rd->csz = 0;
 }
 

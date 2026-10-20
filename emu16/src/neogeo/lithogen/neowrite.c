@@ -198,6 +198,15 @@ int nc_neo_take(const nc_game *g, nc_regions *r,
     img->v2 = r->size[NC_REG_V2] ? r->data[NC_REG_V2] : NULL;
     img->v2sz = img->v2 ? r->size[NC_REG_V2] : 0;
     img->c = r->data[NC_REG_C];   img->csz = r->size[NC_REG_C];
+    /* emu16: low-memory mode */
+    img->cidx = r->cidx;          img->cpoolsz = r->cpoolsz;
+    r->cidx = NULL;
+    img->vspill = r->vspill;
+    if (r->vspill) {
+        img->v2sz = r->size[NC_REG_V2];
+        img->v2region = r->v2region;
+        img->v2off = r->v2off;
+    }
     r->data[NC_REG_P] = r->data[NC_REG_S] = NULL;
     r->data[NC_REG_V1] = r->data[NC_REG_C] = NULL;
     if (img->v2)

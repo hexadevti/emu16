@@ -136,11 +136,30 @@ Every change is marked `emu16` in the source:
     `geo_ymfm_frame_end()`.
   - `ymfm/ymfm_opn.c`, `ymfm_opn.h` and `ymfm_fm_inc.h`: accessors for that model (register
     peek, address latch, EOS flags, flag mask, the timer state, and the CSM key-on).
+- Low-memory mode, for sets bigger than the P4's PSRAM:
+  - `geo.h`: `romdata_t` has `cidx` and `vread`. With `cidx`, `c` is a pool of distinct 32-byte
+    chunks and `cidx[a >> 5]` is the pool offset of C ROM byte `a`'s chunk. `geo_lspc_trow()` reads
+    through it.
+  - With `vread`, the V ROMs are not in memory, and `ymfm_external_read` (`geo_ymfm.c`) gets their
+    bytes from it. emu16 reads them from a file on the SD card, through a block cache.
 - lithogen:
   - `lithogen_convert_mem()` and `lithogen_image_free()` (`lithogen.h`) convert a set into
     memory. `lithogen_convert` is now a wrapper around the same code.
   - `neowrite.c`: `nc_neo_take()` hands the region buffers over, trimmed the way `nc_neo_write`
     trims them for a file.
+  - Low-memory mode (`lithogen.h`: `lithogen_options.mem_avail`, `v_spill`, and the `cidx`,
+    `cpoolsz`, `vspill`, `v2region` and `v2off` fields of `lithogen_image`). It applies when a set's
+    regions add up to more than `mem_avail` and its cart's recipe leaves C and V alone.
+    - `regions.c`: such a C region, if it is loaded as plain odd/even file pairs, is streamed from
+      the zip (`build_c_dedup()`) into a pool of distinct 32-byte chunks and an index.
+    - The V regions are handed to `v_spill` as each is built, and freed. If the caller still has
+      them, they are not built at all, and only their extents are worked out.
+    - `zipio.c`: `nc_zipset_stream()` and friends. They use the same lookup as `nc_zipset_read`,
+      which is now shared with them (`find()`), and miniz's extract iterators.
+    - `lithogen.c`: `nc_apply_meta_sizes` splits spilled V data by offset (`v2off`). It refuses the
+      two V layouts that would need the data in memory (`vfail`). `lithogen_convert` (to a file)
+      never uses low-memory mode.
+    - `neowrite.c`: `nc_neo_take()` hands the fields over. `lithogen_image_free()` frees `cidx`.
   - `crypt/nc_sma.c`: the Garou and Metal Slug 3 68000 decryptors take their 32 KB and 64 KB
     scratch buffers from the heap instead of the stack, which is 32 KB on the P4.
 - `miniz.h`: the functions the ESP32 ROM also has (`tinfl_*`, `tdefl_*`, `mz_adler32`, `mz_free`)

@@ -89,6 +89,7 @@ typedef struct _lspc_t {
 
 void geo_lspc_set_buffer(uint16_t*); // emu16: RGB565
 void geo_lspc_set_fix_banksw(unsigned);
+void geo_lspc_c_predecode(uint8_t*, size_t); // emu16
 void geo_lspc_set_fix(unsigned);
 void geo_lspc_set_sprlimit(unsigned);
 void geo_lspc_set_palette(unsigned);

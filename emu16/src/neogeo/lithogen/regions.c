@@ -59,6 +59,248 @@ static void copy_groups(uint8_t *dst, uint32_t dstoff, uint32_t dstsize,
     }
 }
 
+/* emu16: low-memory mode (lithogen_options.mem_avail) ----------------- */
+
+#include "../miniz/miniz.h"
+
+/* carts whose recipe leaves C and V alone */
+static int lowmem_cart(const char *cart)
+{
+    static const char *const ok[] = { "rom", "rom_vliner", "rom_fatfur2",
+                                      "rom_mslugx", "rom_kof98" };
+    size_t i;
+    for (i = 0; i < sizeof(ok) / sizeof(ok[0]); i++)
+        if (!strcmp(cart, ok[i]))
+            return 1;
+    return 0;
+}
+
+/* A C region dedup can stream: only odd/even file pairs (LOAD16_BYTE,
+ * the first at an even offset, both the same length) whose interleaved
+ * images are whole 32-byte chunks in order inside the region. */
+static int c_dedup_ok(const nc_game *g, const nc_region *reg)
+{
+    uint32_t end = 0;
+    uint16_t li;
+    if (!reg->nloads || (reg->nloads & 1) || (reg->size & 31))
+        return 0;
+    for (li = 0; li < reg->nloads; li += 2) {
+        const nc_load *a = &g->loads[reg->load0 + li];
+        const nc_load *b = a + 1;
+        if (a->kind != NC_LOAD || b->kind != NC_LOAD ||
+            a->group != 1 || a->skip != 1 || a->reverse ||
+            b->group != 1 || b->skip != 1 || b->reverse ||
+            a->optional || b->optional ||
+            b->offset != a->offset + 1 || a->length != b->length ||
+            (a->offset & 31) || ((a->length * 2) & 31) || a->offset < end ||
+            a->offset + a->length * 2 > reg->size)
+            return 0;
+        end = a->offset + a->length * 2;
+    }
+    return 1;
+}
+
+/* A V region spill can follow: file loads only (a ROM_COPY reads another
+ * region's data, which a spilled V region no longer has in memory). */
+static int v_spill_ok(const nc_game *g, const nc_region *reg)
+{
+    uint16_t li;
+    for (li = 0; li < reg->nloads; li++) {
+        const nc_load *ld = &g->loads[reg->load0 + li];
+        if (ld->kind == NC_COPY || ld->kind == NC_FILL)
+            return 0;
+    }
+    return 1;
+}
+
+/* what the caller's spill cache is keyed on: the region's loads */
+static uint32_t v_spill_key(const nc_game *g, const nc_region *reg)
+{
+    uint32_t key = (uint32_t)mz_crc32(MZ_CRC32_INIT,
+                                      (const unsigned char *)g->name,
+                                      strlen(g->name));
+    uint16_t li;
+    for (li = 0; li < reg->nloads; li++) {
+        const nc_load *ld = &g->loads[reg->load0 + li];
+        uint32_t w[5];
+        w[0] = ld->kind | (uint32_t)ld->group << 8 |
+               (uint32_t)ld->skip << 16 | (uint32_t)ld->reverse << 24;
+        w[1] = ld->offset;
+        w[2] = ld->length;
+        w[3] = ld->crc;
+        w[4] = reg->size;
+        key = (uint32_t)mz_crc32(key, (const unsigned char *)w, sizeof(w));
+    }
+    return key;
+}
+
+static uint32_t chunk_hash(const uint8_t *c)
+{
+    uint32_t h = 0x9e3779b9u, w;
+    int i;
+    for (i = 0; i < 32; i += 4) {
+        memcpy(&w, c + i, 4);
+        h = (h ^ w) * 0x85ebca6bu;
+        h ^= h >> 15;
+    }
+    return h;
+}
+
+/* Streams the C file pairs out of the zip and keeps each distinct 32-byte
+ * chunk (a quarter tile) once: many games repeat tiles, and aof3's 28 MB
+ * C ROM holds 18.6 MB of distinct ones.  The pool takes the largest block
+ * the heap has (less room for the zip streams) and is trimmed after.
+ * The hash table is lossy - a chunk whose slot another chunk took may be
+ * stored twice - which costs little and keeps the table small. */
+static int build_c_dedup(const nc_game *g, const nc_region *reg,
+                         nc_zipset *zs, nc_regions *r,
+                         const lithogen_options *opt, lithogen_report *rep)
+{
+    enum { IN = 4096, SLACK = 0x80000 };
+    const uint32_t nchunks = reg->size / 32;
+    uint32_t hbits = 12, hmask, used = 0, cap;
+    uint32_t *cidx, *htab;
+    uint8_t *pool = NULL, *ina, *inb, *win;
+    uint16_t li;
+    int st = LITHOGEN_ERR_NOMEM;
+
+    while (hbits < 18 && (1u << hbits) < nchunks / 4)
+        hbits++;
+    hmask = (1u << hbits) - 1;
+    cidx = (uint32_t *)malloc((size_t)nchunks * 4);
+    htab = (uint32_t *)malloc((size_t)4 << hbits);
+    ina = (uint8_t *)malloc(IN);
+    inb = (uint8_t *)malloc(IN);
+    win = (uint8_t *)malloc(IN * 2);
+    if (!cidx || !htab || !ina || !inb || !win)
+        goto out;
+    /* the largest pool the heap gives, then room back for the streams */
+    for (cap = reg->size; cap >= SLACK * 2; cap -= SLACK)
+        if ((pool = (uint8_t *)malloc(cap)) != NULL)
+            break;
+    if (!pool)
+        goto out;
+    if (cap != reg->size) {
+        uint8_t *p = (uint8_t *)realloc(pool, cap - SLACK);
+        if (p) {
+            pool = p;
+            cap -= SLACK;
+        }
+    }
+    memset(htab, 0xff, (size_t)4 << hbits);
+    /* chunk 0: the erase fill, where unloaded parts of the region point */
+    memset(pool, reg->erasefill, 32);
+    htab[chunk_hash(pool) & hmask] = 0;
+    used = 32;
+    memset(cidx, 0, (size_t)nchunks * 4);
+
+    for (li = 0; li < reg->nloads; li += 2) {
+        const nc_load *la = &g->loads[reg->load0 + li];
+        const nc_load *lb = la + 1;
+        size_t alen = 0, blen = 0;
+        uint32_t acrc = 0, bcrc = 0, done = 0, ci = la->offset / 32;
+        nc_zipstream *sa, *sb = NULL;
+        int ok, cut = 0;
+
+        sa = nc_zipset_stream(zs, la->file, la->crc, la->length, &alen, &acrc);
+        if (sa)
+            sb = nc_zipset_stream(zs, lb->file, lb->crc, lb->length,
+                                  &blen, &bcrc);
+        if (!sa || !sb) {
+            const nc_load *m = sa ? lb : la;
+            nc_zipstream_close(sa);
+            snprintf(rep->errstr, LITHOGEN_ERRSTR_MAX,
+                     "missing ROM: %s (crc %08x) for set %s",
+                     m->file, m->crc, g->name);
+            st = LITHOGEN_ERR_MISSING_ROM;
+            goto out;
+        }
+        if (acrc != la->crc || bcrc != lb->crc) {
+            const nc_load *m = acrc != la->crc ? la : lb;
+            rep->crc_mismatches++;
+            nc_warn(opt, "%s: crc %08x, expected %08x", m->file,
+                    acrc != la->crc ? acrc : bcrc, m->crc);
+            if (opt->strict_crc) {
+                nc_zipstream_close(sa);
+                nc_zipstream_close(sb);
+                snprintf(rep->errstr, LITHOGEN_ERRSTR_MAX,
+                         "CRC mismatch on %s", m->file);
+                st = LITHOGEN_ERR_CRC;
+                goto out;
+            }
+        }
+        while (done < la->length && !cut) {
+            uint32_t n = la->length - done, i;
+            size_t ga, gb;
+            if (n > IN)
+                n = IN;
+            ga = nc_zipstream_read(sa, ina, n);
+            gb = nc_zipstream_read(sb, inb, n);
+            if (ga < n || gb < n) {
+                /* a short file: the rest of the pair stays erase fill */
+                nc_warn(opt, "%s: file is shorter than %u bytes",
+                        ga < n ? la->file : lb->file, la->length);
+                memset(ina + ga, reg->erasefill, n - ga);
+                memset(inb + gb, reg->erasefill, n - gb);
+                cut = 1;
+            }
+            for (i = 0; i < n; i++) {
+                win[i * 2] = ina[i];
+                win[i * 2 + 1] = inb[i];
+            }
+            for (i = 0; i < n * 2; i += 32, ci++) {
+                const uint8_t *c = win + i;
+                uint32_t *h = &htab[chunk_hash(c) & hmask];
+                if (*h != 0xffffffffu && !memcmp(pool + *h, c, 32)) {
+                    cidx[ci] = *h;
+                    continue;
+                }
+                if (used + 32 > cap) {
+                    nc_zipstream_close(sa);
+                    nc_zipstream_close(sb);
+                    goto out;
+                }
+                memcpy(pool + used, c, 32);
+                *h = cidx[ci] = used;
+                used += 32;
+            }
+            done += n;
+        }
+        /* a stream read to its end reports bad data on close */
+        ok = nc_zipstream_close(sa) | (alen > la->length) | cut;
+        ok &= nc_zipstream_close(sb) | (blen > lb->length) | cut;
+        if (!ok) {
+            snprintf(rep->errstr, LITHOGEN_ERRSTR_MAX,
+                     "cannot read %s/%s (bad zip data)", la->file, lb->file);
+            st = LITHOGEN_ERR_ZIP;
+            goto out;
+        }
+    }
+
+    {
+        uint8_t *p = (uint8_t *)realloc(pool, used);
+        if (p)
+            pool = p;
+    }
+    r->data[NC_REG_C] = pool;
+    r->size[NC_REG_C] = reg->size;
+    r->cidx = cidx;
+    r->cpoolsz = used;
+    pool = NULL;
+    cidx = NULL;
+    st = LITHOGEN_OK;
+out:
+    if (st == LITHOGEN_ERR_NOMEM)
+        snprintf(rep->errstr, LITHOGEN_ERRSTR_MAX, "out of memory");
+    free(pool);
+    free(cidx);
+    free(htab);
+    free(ina);
+    free(inb);
+    free(win);
+    return st;
+}
+
 int nc_regions_build(const nc_game *g, nc_zipset *zs, nc_regions *r,
                      const lithogen_options *opt, lithogen_report *rep)
 {
@@ -84,7 +326,23 @@ int nc_regions_build(const nc_game *g, nc_zipset *zs, nc_regions *r,
             v2_extent = (uint32_t)(end); \
     } while (0)
 
+    int lowmem = 0, vspill = 0;          /* emu16: low-memory mode */
     memset(r, 0, sizeof(*r));
+
+    if (opt->mem_avail && lowmem_cart(g->cart)) {
+        uint64_t total = 0;
+        for (ri = 0; ri < g->nregions; ri++)
+            total += g->regions[ri].size;
+        lowmem = total > opt->mem_avail;
+    }
+    if (lowmem && opt->v_spill) {
+        vspill = 1;
+        for (ri = 0; ri < g->nregions; ri++)
+            if ((g->regions[ri].kind == NC_REG_V1 ||
+                 g->regions[ri].kind == NC_REG_V2) &&
+                !v_spill_ok(g, &g->regions[ri]))
+                vspill = 0;
+    }
 
     for (ri = 0; ri < g->nregions; ri++) {
         const nc_region *reg = &g->regions[ri];
@@ -99,6 +357,39 @@ int nc_regions_build(const nc_game *g, nc_zipset *zs, nc_regions *r,
         uint8_t *fdata = NULL;
         size_t flen = 0, fpos = 0;
         uint16_t li;
+        /* emu16: low-memory mode */
+        const int spill = vspill &&
+            (reg->kind == NC_REG_V1 || reg->kind == NC_REG_V2);
+        uint32_t key = 0;
+
+        if (lowmem && reg->kind == NC_REG_C && c_dedup_ok(g, reg)) {
+            int st = build_c_dedup(g, reg, zs, r, opt, rep);
+            if (st != LITHOGEN_OK)
+                return st;
+            continue;
+        }
+        if (spill) {
+            const int which = reg->kind == NC_REG_V2;
+            key = v_spill_key(g, reg);
+            r->vspill = 1;
+            if (which)
+                r->v2region = 1;
+            if (opt->v_spill(which, key, NULL, 0, opt->v_spill_user)) {
+                /* the caller still has it: only the extents are needed */
+                const int from_file = 1;
+                r->size[reg->kind] = reg->size;
+                for (li = 0; li < reg->nloads; li++) {
+                    const nc_load *ld = &g->loads[reg->load0 + li];
+                    if (which)
+                        v2_all_copies = 0;
+                    if ((ld->kind == NC_LOAD && ld->group) ||
+                        ld->kind == NC_CONTINUE)
+                        TRACK_P(ld->offset +
+                                load_span(ld->length, ld->group, ld->skip));
+                }
+                continue;
+            }
+        }
 
         if (reg->kind == NC_REG_M && alloc < 0x90000)
             alloc = 0x90000;
@@ -244,6 +535,22 @@ int nc_regions_build(const nc_game *g, nc_zipset *zs, nc_regions *r,
         }
         free(fdata);
         (void)region_index;
+        if (spill) {
+            /* emu16: low-memory mode: the populated part goes to the
+             * caller, and the region keeps only its size */
+            uint32_t ext = reg->kind == NC_REG_V2 ? v2_extent : v1_extent;
+            uint32_t n = ext ? (ext + 0xffffu) & ~0xffffu : reg->size;
+            if (n > reg->size)
+                n = reg->size;
+            if (!opt->v_spill(reg->kind == NC_REG_V2, key, buf, n,
+                              opt->v_spill_user)) {
+                snprintf(rep->errstr, LITHOGEN_ERRSTR_MAX,
+                         "cannot store the sound ROM cache");
+                return LITHOGEN_ERR_IO;
+            }
+            free(buf);
+            r->data[reg->kind] = NULL;
+        }
     }
 
 #undef TRACK_P
@@ -333,4 +640,6 @@ void nc_regions_free(nc_regions *r)
         free(r->data[i]);
         r->data[i] = NULL;
     }
+    free(r->cidx);                         /* emu16 */
+    r->cidx = NULL;
 }

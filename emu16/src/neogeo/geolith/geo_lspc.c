@@ -58,8 +58,17 @@ static unsigned sprlimit = 96; // Sprites-per-line limit
 static unsigned skip_render; // Skip rendering during CD loading fast-forward
 
 // Line buffering
-static unsigned linebuf[2][LSPC_WIDTH]; // Line buffers for sprite pixels
+uint32_t geo_dg[8], geo_dgmode; // DIAG
+static unsigned linebuf_int[2][LSPC_WIDTH]; // Line buffers for sprite pixels
+static unsigned (*linebuf)[LSPC_WIDTH] = linebuf_int, (*linebuf_ext)[LSPC_WIDTH]; // DIAG
+void geo_dgswap(void *ext) { // DIAG: line buffers internal <-> PSRAM
+    if (!linebuf_ext) linebuf_ext = (unsigned (*)[LSPC_WIDTH])ext;
+    unsigned (*n)[LSPC_WIDTH] = linebuf == linebuf_int ? linebuf_ext : linebuf_int;
+    memcpy(n, linebuf, sizeof(linebuf_int)); linebuf = n; geo_dgmode = linebuf != linebuf_int;
+}
 static unsigned lbactive = 0; // Active line buffer
+static uint16_t *palette_normal;
+void geo_dgptr(void **o) { o[0] = lspc_p; o[1] = palette_normal; o[2] = vbuf; o[3] = romdata->l0; o[4] = linebuf; } // DIAG
 
 static uint8_t *fixdata = NULL;
 
@@ -433,10 +442,17 @@ static inline void geo_lspc_bdsprline(void) {
     uint16_t *ptr = vbuf + (lspc.scanline * LSPC_WIDTH);
     unsigned *lb = linebuf[lbactive];
 
-    for (unsigned p = 0; p < LSPC_WIDTH; ++p) {
-        ptr[p] = lb[p] ? palette[lb[p]] : bdcol;
-        lb[p] = 0;
-    }
+    /* emu16: no test per pixel -- an empty pixel (0) looks up palette[0], which holds the
+       backdrop for the length of the loop (no sprite pixel uses it: their colour index is never
+       0), two pixels per 32-bit store, then the line buffer is cleared in one go
+    */
+    const uint16_t keep = palette[0];
+    palette[0] = bdcol;
+    uint32_t *out = (uint32_t*)ptr;
+    for (unsigned p = 0; p < LSPC_WIDTH; p += 2)
+        *out++ = palette[lb[p]] | (uint32_t)palette[lb[p + 1]] << 16;
+    palette[0] = keep;
+    memset(lb, 0, sizeof(linebuf_int[0]));
 }
 
 // Read half of a a palette RAM entry from the active bank
@@ -578,6 +594,20 @@ void geo_lspc_init(void) {
     romdata = geo_romdata_ptr();
 }
 
+/* emu16: one fix tile row. The row's 4 bytes (0x10, 0x18, 0x00, 0x08, low
+   nibble first) are gathered into one word so a transparent row costs four
+   loads and a branch instead of eight pixel tests.
+*/
+#define GEO_FIXPUT(n) if ((pentry = (r >> ((n) << 2)) & 0x0f)) v[n] = palette[po + pentry]
+static inline __attribute__((always_inline)) void geo_lspc_fixrow(uint16_t *v, const uint8_t *t, unsigned po) {
+    const uint32_t r = t[0x10] | t[0x18] << 8 | t[0x00] << 16 | (uint32_t)t[0x08] << 24;
+    if (!r) return;
+    unsigned pentry;
+    GEO_FIXPUT(0); GEO_FIXPUT(1); GEO_FIXPUT(2); GEO_FIXPUT(3);
+    GEO_FIXPUT(4); GEO_FIXPUT(5); GEO_FIXPUT(6); GEO_FIXPUT(7);
+}
+#undef GEO_FIXPUT
+
 // No Fix Layer Banking (Default)
 static void geo_lspc_fixline_default(void) {
     /* The "fix map" is located in VRAM from 0x7000 to 0x74ff. Each map entry
@@ -636,15 +666,7 @@ static void geo_lspc_fixline_default(void) {
         // Row in the 8 pixel high tile
         unsigned row = line & 0x07;
 
-        // If the palette entry is non-zero, output a colour
-        uint32_t pentry = 0;
-        for (unsigned p = 0, f = 0x10; p < 4; ++p, f = (f + 0x08) & 0x18) {
-            pentry = tdata[f + row] & 0x0f;
-            if (pentry) voffset[p << 1] = palette[poffset + pentry];
-
-            pentry = (tdata[f + row] >> 4) & 0x0f;
-            if (pentry) voffset[(p << 1) + 1] = palette[poffset + pentry];
-        }
+        geo_lspc_fixrow(voffset, tdata + row, poffset); // emu16
     }
 }
 
@@ -689,14 +711,7 @@ static void geo_lspc_fixline_line(void) {
         uint16_t *voffset =
             vbuf + (LSPC_WIDTH * lspc.scanline) + (x << 3);
         unsigned row = line & 0x07;
-        uint32_t pentry = 0;
-        for (unsigned p = 0, f = 0x10; p < 4; ++p, f = (f + 0x08) & 0x18) {
-            pentry = tdata[f + row] & 0x0f;
-            if (pentry) voffset[p << 1] = palette[poffset + pentry];
-
-            pentry = (tdata[f + row] >> 4) & 0x0f;
-            if (pentry) voffset[(p << 1) + 1] = palette[poffset + pentry];
-        }
+        geo_lspc_fixrow(voffset, tdata + row, poffset); // emu16
     }
 }
 
@@ -727,15 +742,7 @@ static void geo_lspc_fixline_tile(void) {
         // Row in the 8 pixel high tile
         unsigned row = line & 0x07;
 
-        // If the palette entry is non-zero, output a colour
-        uint32_t pentry = 0;
-        for (unsigned p = 0, f = 0x10; p < 4; ++p, f = (f + 0x08) & 0x18) {
-            pentry = tdata[f + row] & 0x0f;
-            if (pentry) voffset[p << 1] = palette[poffset + pentry];
-
-            pentry = (tdata[f + row] >> 4) & 0x0f;
-            if (pentry) voffset[(p << 1) + 1] = palette[poffset + pentry];
-        }
+        geo_lspc_fixrow(voffset, tdata + row, poffset); // emu16
     }
 }
 
@@ -827,6 +834,7 @@ static inline unsigned geo_lspc_tpix(unsigned tbase, unsigned x, unsigned y) {
    Filled in geo_lspc_init.
 */
 static uint32_t lut_planar[256];
+static uint8_t lut_hsrc[0x10][0x10]; // emu16: see geo_lspc_planar_gen
 
 static void geo_lspc_planar_gen(void) {
     for (unsigned b = 0; b < 256; ++b) {
@@ -836,25 +844,67 @@ static void geo_lspc_planar_gen(void) {
                 v |= 1u << (x << 2);
         lut_planar[b] = v;
     }
+    for (unsigned h = 0; h < 0x10; ++h) // emu16: the pixels each hshrink value keeps
+        for (unsigned p = 0, k = 0; p < 0x10; ++p)
+            if (lut_hshrink[h][p])
+                lut_hsrc[h][k++] = p;
 }
 
 /* emu16: one 8-pixel row of a tile, in the order geo_lspc_tpix reads it: pixel x in bits 4x to
    4x+3
 */
 static inline uint32_t geo_lspc_trow(unsigned base) {
-    // emu16: one aligned 32-bit read (base is a multiple of 4) instead of four byte reads
-    const uint32_t w = *(const uint32_t*)(romdata->c + base);
+    // emu16: one aligned 32-bit read (base is a multiple of 4) instead of four byte reads,
+    // through the chunk index in low-memory mode
+    const uint32_t w = romdata->cidx ?
+        *(const uint32_t*)(romdata->c + romdata->cidx[base >> 5] + (base & 31)) :
+        *(const uint32_t*)(romdata->c + base);
     if (ngsys.cdmode)
         return lut_planar[(w >> 8) & 0xff] | lut_planar[w & 0xff] << 1 |
             lut_planar[w >> 24] << 2 | lut_planar[(w >> 16) & 0xff] << 3;
-    return lut_planar[w & 0xff] | lut_planar[(w >> 16) & 0xff] << 1 |
-        lut_planar[(w >> 8) & 0xff] << 2 | lut_planar[w >> 24] << 3;
+    return w; // cartridge C ROM is decoded at load (geo_lspc_c_predecode)
 }
+
+/* emu16: a cartridge's C ROM (or, in low-memory mode, its chunk pool), each 32-bit row decoded
+   once from the four bitplanes to geo_lspc_trow's nibble order, in place. Each word maps on its
+   own, so identical chunks stay identical. Must run after geo_neo_setup, whose fixes for some
+   sets read the raw C ROM
+*/
+void geo_lspc_c_predecode(uint8_t *c, size_t n) {
+    geo_lspc_planar_gen();
+    uint32_t *p = (uint32_t*)c;
+    for (size_t i = 0; i < n >> 2; ++i) {
+        const uint32_t w = p[i];
+        p[i] = lut_planar[w & 0xff] | lut_planar[(w >> 16) & 0xff] << 1 |
+            lut_planar[(w >> 8) & 0xff] << 2 | lut_planar[w >> 24] << 3;
+    }
+}
+
+/* emu16: 8 decoded pixels to the line buffer, unrolled; a row with no transparent pixel (no
+   zero nibble) is stored without testing each one
+*/
+#define GEO_PUT(n) if (r & (0x0fu << ((n) << 2))) lb[n] = po + ((r >> ((n) << 2)) & 0x0f)
+static inline __attribute__((always_inline)) void geo_lspc_put8(unsigned *lb, uint32_t r, unsigned po) {
+    if (!r)
+        return;
+    if (!((r - 0x11111111) & ~r & 0x88888888)) {
+        lb[0] = po + (r & 0x0f); lb[1] = po + ((r >> 4) & 0x0f);
+        lb[2] = po + ((r >> 8) & 0x0f); lb[3] = po + ((r >> 12) & 0x0f);
+        lb[4] = po + ((r >> 16) & 0x0f); lb[5] = po + ((r >> 20) & 0x0f);
+        lb[6] = po + ((r >> 24) & 0x0f); lb[7] = po + (r >> 28);
+        return;
+    }
+    GEO_PUT(0); GEO_PUT(1); GEO_PUT(2); GEO_PUT(3);
+    GEO_PUT(4); GEO_PUT(5); GEO_PUT(6); GEO_PUT(7);
+}
+#undef GEO_PUT
 
 // emu16: the 8 pixels of a decoded row in the opposite order (for hflip)
 static inline uint32_t geo_lspc_nibrev(uint32_t x) {
-    x = __builtin_bswap32(x);
-    return ((x >> 4) & 0x0f0f0f0f) | ((x & 0x0f0f0f0f) << 4);
+    // shifts and masks: __builtin_bswap32 is a libgcc call on the P4
+    x = ((x >> 4) & 0x0f0f0f0f) | ((x & 0x0f0f0f0f) << 4);
+    x = ((x >> 8) & 0x00ff00ff) | ((x & 0x00ff00ff) << 8);
+    return (x >> 16) | (x << 16);
 }
 
 // emu16: the chain walk geo_lspc_sprcalc did for every line, once (see sprlist)
@@ -914,7 +964,11 @@ static inline void geo_lspc_sprcalc(void) {
     const uint32_t *band = sprband[(line & 0x1ff) >> 4];
     for (unsigned w = 0; w < SPRBAND_WORDS; ++w)
     for (uint32_t bits = band[w]; bits; ) {
-        const sprent_t *e = &sprlist[(w << 5) + __builtin_ctz(bits)];
+        // emu16: lowest set bit by de Bruijn multiply (__builtin_ctz is a libgcc call on the P4)
+        static const uint8_t dbj[32] = {
+            0, 1, 28, 2, 29, 14, 24, 3, 30, 22, 20, 15, 25, 17, 4, 8,
+            31, 27, 13, 23, 21, 19, 16, 7, 26, 12, 18, 6, 11, 5, 10, 9 };
+        const sprent_t *e = &sprlist[(w << 5) + dbj[((bits & -bits) * 0x077cb531u) >> 27]];
         bits &= bits - 1;
         unsigned sprsize = e->size;
         unsigned ypos = e->ypos;
@@ -1061,8 +1115,8 @@ static inline void geo_lspc_sprcalc(void) {
            and a row with no opaque pixels is skipped
         */
         unsigned rbase = toffset + (y << 2);
-        uint32_t r0 = geo_lspc_trow(rbase + (ftile << 3));
-        uint32_t r1 = geo_lspc_trow(rbase + ((ftile ^ 0x08) << 3));
+        uint32_t r0 = geo_lspc_trow(rbase + (ftile << 3)); // DIAG
+        uint32_t r1 = geo_lspc_trow(rbase + ((ftile ^ 0x08) << 3)); // DIAG
         if (!(r0 | r1))
             continue;
         if (hflip) {
@@ -1073,13 +1127,23 @@ static inline void geo_lspc_sprcalc(void) {
         unsigned *lb = linebuf[lbactive];
 
         if (hshrink == 0x0f && xpos <= LSPC_WIDTH - 16) { // Full width, on screen
+            geo_lspc_put8(lb + xpos, r0, poffset);
+            geo_lspc_put8(lb + xpos + 8, r1, poffset);
+            continue;
+        }
+
+        /* emu16: shrunk and on screen -- only the hshrink + 1 pixels that are drawn, from a
+           list of their positions in the row (was a test of every pixel's lut_hshrink entry)
+        */
+        if (xpos <= LSPC_WIDTH - 16) {
+            const uint8_t *src = lut_hsrc[hshrink];
             lb += xpos;
-            for (unsigned p = 0; p < 8; ++p, r0 >>= 4)
-                if (r0 & 0x0f)
-                    lb[p] = poffset + (r0 & 0x0f);
-            for (unsigned p = 8; p < 16; ++p, r1 >>= 4)
-                if (r1 & 0x0f)
-                    lb[p] = poffset + (r1 & 0x0f);
+            for (unsigned k = 0; k <= hshrink; ++k) {
+                unsigned s = src[k];
+                unsigned pentry = ((s & 8 ? r1 : r0) >> ((s & 7) << 2)) & 0x0f;
+                if (pentry)
+                    lb[k] = poffset + pentry;
+            }
             continue;
         }
 
@@ -1125,11 +1189,15 @@ static void geo_lspc_scanline(void) {
 
     if (lspc.scanline >= LSPC_LINE_BORDER_TOP &&
         lspc.scanline < LSPC_LINE_BORDER_BOTTOM) {
+        uint32_t t0 = ngc_cycles(), t1, t2, tw = 0; // DIAG
         geo_lspc_bdsprline();
+        t1 = ngc_cycles();
         if (!reg_disblspr)
             geo_lspc_sprcalc();
+        t2 = ngc_cycles();
         if (!reg_disblfix)
             geo_lspc_fixline();
+        geo_dg[2] += t1 - t0; geo_dg[0] += t2 - t1 - tw; geo_dg[7] += tw; geo_dg[1] += ngc_cycles() - t2; geo_dg[6]++; // DIAG
     }
     else if (lspc.scanline == LSPC_LINE_BUFSTART ||
         lspc.scanline == LSPC_LINE_BUFSTART + 1) {

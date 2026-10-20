@@ -258,6 +258,7 @@ void *hal_alloc_fast(size_t n) {
   return p ? p : hal_alloc_big(n);
 }
 void hal_free(void *p) { free(p); }
+size_t hal_free_big() { return heap_caps_get_free_size(MALLOC_CAP_SPIRAM); }
 
 bool        hal_sd_mounted() { return s_sdOk; }
 const char *hal_sd_root()    { return SD_MOUNT; }

@@ -99,6 +99,14 @@ nc_zipset *nc_zipset_open(const char *const *paths, size_t npaths, char *err);
 void nc_zipset_close(nc_zipset *zs);
 /* Locate an entry by name (case-insensitive, basename match); if absent,
  * fall back to CRC32 match.  Returns malloc'd data or NULL. */
+/* emu16: the same lookup, returning the entry for streaming */
+typedef struct nc_zipstream nc_zipstream;
+nc_zipstream *nc_zipset_stream(nc_zipset *zs, const char *name, uint32_t crc,
+                               size_t expect_len, size_t *out_len,
+                               uint32_t *out_crc);
+size_t nc_zipstream_read(nc_zipstream *s, void *buf, size_t n);
+/* 0 when the data failed its CRC (or was cut short) */
+int nc_zipstream_close(nc_zipstream *s);
 uint8_t *nc_zipset_read(nc_zipset *zs, const char *name, uint32_t crc,
                         size_t expect_len, size_t *out_len, uint32_t *out_crc);
 
@@ -121,6 +129,13 @@ typedef struct {
     uint32_t m_window_off;
     uint32_t m_window_len;
     uint32_t mx_extent;   /* audiocrypt file extent: encrypted M output */
+    /* emu16: low-memory mode (see lithogen_options.mem_avail) */
+    uint32_t *cidx;       /* C is a chunk pool: data[NC_REG_C] + cidx[i]  */
+    uint32_t cpoolsz;
+    int vspill;           /* V1/V2 data went to v_spill (data[] NULL)     */
+    int v2region;         /* V2's spilled region (0: V1's, at v2off)      */
+    uint32_t v2off;
+    int vfail;            /* a V layout the spilled data cannot follow    */
 } nc_regions;
 
 void nc_apply_meta_sizes(const nc_game *g, nc_regions *r,

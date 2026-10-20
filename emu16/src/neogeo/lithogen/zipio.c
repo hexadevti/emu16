@@ -81,8 +81,9 @@ static uint8_t *extract(mz_zip_archive *za, mz_uint idx, size_t *out_len,
     return buf;
 }
 
-uint8_t *nc_zipset_read(nc_zipset *zs, const char *name, uint32_t crc,
-                        size_t expect_len, size_t *out_len, uint32_t *out_crc)
+/* emu16: nc_zipset_read's lookup, shared with nc_zipset_stream */
+static int find(nc_zipset *zs, const char *name, uint32_t crc,
+                size_t expect_len, mz_zip_archive **out_za, mz_uint *out_idx)
 {
     size_t z;
     mz_uint i;
@@ -93,8 +94,11 @@ uint8_t *nc_zipset_read(nc_zipset *zs, const char *name, uint32_t crc,
         for (i = 0; i < nfiles; i++) {
             char fname[512];
             mz_zip_reader_get_filename(za, i, fname, sizeof(fname));
-            if (name_eq(fname, name))
-                return extract(za, i, out_len, out_crc);
+            if (name_eq(fname, name)) {
+                *out_za = za;
+                *out_idx = i;
+                return 1;
+            }
         }
     }
     /* pass 2: by CRC32 (renamed files, split/merged set differences) */
@@ -112,10 +116,50 @@ uint8_t *nc_zipset_read(nc_zipset *zs, const char *name, uint32_t crc,
                  * match a renamed multi-chunk file, so a MAME 0.139 set whose
                  * 201-p1.bin is byte-identical to 201-p1.p1 was "missing". */
                 if ((uint32_t)st.m_crc32 == crc &&
-                    (size_t)st.m_uncomp_size >= expect_len)
-                    return extract(za, i, out_len, out_crc);
+                    (size_t)st.m_uncomp_size >= expect_len) {
+                    *out_za = za;
+                    *out_idx = i;
+                    return 1;
+                }
             }
         }
     }
-    return NULL;
+    return 0;
+}
+
+uint8_t *nc_zipset_read(nc_zipset *zs, const char *name, uint32_t crc,
+                        size_t expect_len, size_t *out_len, uint32_t *out_crc)
+{
+    mz_zip_archive *za;
+    mz_uint i;
+    if (!find(zs, name, crc, expect_len, &za, &i))
+        return NULL;
+    return extract(za, i, out_len, out_crc);
+}
+
+nc_zipstream *nc_zipset_stream(nc_zipset *zs, const char *name, uint32_t crc,
+                               size_t expect_len, size_t *out_len,
+                               uint32_t *out_crc)
+{
+    mz_zip_archive *za;
+    mz_uint i;
+    mz_zip_archive_file_stat st;
+    if (!find(zs, name, crc, expect_len, &za, &i) ||
+        !mz_zip_reader_file_stat(za, i, &st))
+        return NULL;
+    *out_len = (size_t)st.m_uncomp_size;
+    *out_crc = (uint32_t)st.m_crc32;
+    return (nc_zipstream *)mz_zip_reader_extract_iter_new(za, i, 0);
+}
+
+size_t nc_zipstream_read(nc_zipstream *s, void *buf, size_t n)
+{
+    return mz_zip_reader_extract_iter_read(
+        (mz_zip_reader_extract_iter_state *)s, buf, n);
+}
+
+int nc_zipstream_close(nc_zipstream *s)
+{
+    return s ? (int)mz_zip_reader_extract_iter_free(
+        (mz_zip_reader_extract_iter_state *)s) : 1;
 }

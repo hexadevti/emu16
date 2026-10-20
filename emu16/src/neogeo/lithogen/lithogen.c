@@ -141,6 +141,16 @@ void nc_apply_meta_sizes(const nc_game *g, nc_regions *r,
 
     /* split a merged V chain at the known-good boundary */
     if (ours[4] == 0 && meta->sizes[4] != 0 &&
+        meta->sizes[3] + meta->sizes[4] == ours[3] && r->vspill) {
+        /* emu16: low-memory mode: V2 is read from V1's spilled data */
+        r->v2region = 0;
+        r->v2off = meta->sizes[3];
+        r->size[NC_REG_V2] = meta->sizes[4];
+        r->size[NC_REG_V1] = meta->sizes[3];
+        ours[3] = meta->sizes[3];
+        ours[4] = meta->sizes[4];
+    }
+    else if (ours[4] == 0 && meta->sizes[4] != 0 &&
         meta->sizes[3] + meta->sizes[4] == ours[3]) {
         uint32_t v1n = meta->sizes[3], v2n = meta->sizes[4];
         uint8_t *v2 = (uint8_t *)malloc(v2n);
@@ -159,6 +169,12 @@ void nc_apply_meta_sizes(const nc_game *g, nc_regions *r,
      * resolve through the consumer's 0-based reads; V1 keeps the
      * ADPCM-A part.  The V1 buffer still holds the complete chain even
      * after a tail-copy split (only its logical size was trimmed). */
+    /* emu16: the two below rebuild V from data a spill no longer has */
+    else if (r->vspill && ((meta->sizes[4] == ours[3] + ours[4] &&
+             meta->sizes[3] <= ours[3] + ours[4] && meta->sizes[4] != 0) ||
+             (ours[4] != 0 && meta->sizes[4] == 0 &&
+              meta->sizes[3] == ours[3] + ours[4])))
+        r->vfail = 1;
     else if (meta->sizes[4] == ours[3] + ours[4] &&
              meta->sizes[3] <= ours[3] + ours[4] && meta->sizes[4] != 0) {
         uint32_t total = ours[3] + ours[4];
@@ -298,6 +314,7 @@ void lithogen_image_free(lithogen_image *img)
     free(img->v1);
     free(img->v2);
     free(img->c);
+    free(img->cidx);
     memset(img, 0, sizeof(*img));
 }
 
@@ -383,6 +400,13 @@ static lithogen_status convert(const char *zip_path, const char *out_path,
     if (!zs)
         return LITHOGEN_ERR_ZIP;
 
+    /* emu16: low-memory mode is for convert_mem only */
+    if (!img && opt->mem_avail) {
+        static lithogen_options o;
+        o = *opt;
+        o.mem_avail = 0;
+        opt = &o;
+    }
     st = (lithogen_status)nc_regions_build(&nc_games[gi], zs, &regions, opt, rep);
     nc_zipset_close(zs);
     if (st != LITHOGEN_OK) {
@@ -395,7 +419,11 @@ static lithogen_status convert(const char *zip_path, const char *out_path,
                                              rep->errstr);
     if (st == LITHOGEN_OK && !opt->dry_run) {
         nc_apply_meta_sizes(&nc_games[gi], &regions, opt);
-        if (img) {
+        if (regions.vfail) {
+            snprintf(rep->errstr, LITHOGEN_ERRSTR_MAX, "out of memory"
+                     " (this set's V ROM layout needs it all in memory)");
+            st = LITHOGEN_ERR_NOMEM;
+        } else if (img) {
             st = (lithogen_status)nc_neo_take(&nc_games[gi], &regions, opt,
                                              img, rep->errstr);
             rep->ngh = img->ngh;

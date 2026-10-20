@@ -88,10 +88,12 @@ static uint8_t f_eos, f_flag_mask = 0xbf;
 
 uint8_t ymfm_external_read(uint32_t type, uint32_t address) {
     switch (type) {
-        case ACCESS_ADPCM_A:
-            return address > romdata->v1sz ? 0 : romdata->v1[address];
+        case ACCESS_ADPCM_A: // emu16: vread in low-memory mode
+            return address > romdata->v1sz ? 0 :
+                romdata->vread ? romdata->vread(0, address) : romdata->v1[address];
         case ACCESS_ADPCM_B:
-            return address > romdata->v2sz ? 0 : romdata->v2[address];
+            return address > romdata->v2sz ? 0 :
+                romdata->vread ? romdata->vread(1, address) : romdata->v2[address];
         default:
             return 0;
     }

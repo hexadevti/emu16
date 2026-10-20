@@ -107,6 +107,7 @@ bool hal_crash_report(char *, size_t) { return false; }
 void *hal_alloc_big(size_t n)  { return calloc(1, n); }
 void *hal_alloc_fast(size_t n) { return calloc(1, n); }
 void  hal_free(void *p)        { free(p); }
+size_t hal_free_big()          { return SIZE_MAX; }
 int   hal_battery_percent()    { return -1; }
 bool  hal_battery_charging()   { return false; }
 bool        hal_sd_mounted()   { return true; }

@@ -102,6 +102,20 @@ typedef struct {
     uint32_t screenshot;
     const char *name_override;
     const char *manufacturer_override;
+
+    /* emu16: low-memory mode for lithogen_convert_mem.  When the set's
+     * regions add up to more than mem_avail bytes (0 = no limit), a C ROM
+     * loaded as plain odd/even file pairs by a cart that leaves C alone is
+     * streamed from the zip into a pool of unique 32-byte chunks (see
+     * lithogen_image.cidx), and the V regions go to v_spill instead of
+     * the image.  v_spill(region, key, NULL, 0, user), region 0 for V1
+     * and 1 for V2, asks whether the caller already holds that region
+     * under that key (nonzero: yes, it is not built); with data it hands
+     * the built region over and returns nonzero once stored. */
+    size_t mem_avail;
+    int (*v_spill)(int region, uint32_t key, const uint8_t *data,
+                   uint32_t size, void *user);
+    void *v_spill_user;
 } lithogen_options;
 
 typedef struct {
@@ -151,6 +165,16 @@ typedef struct {
     uint32_t psz, ssz, msz, v1sz, v2sz, csz;
     uint32_t ngh;
     const char *title;           /* static data */
+    /* emu16: low-memory mode (lithogen_options.mem_avail).  When cidx is
+     * set, c holds cpoolsz bytes of unique 32-byte chunks and chunk i of
+     * the csz-byte C ROM is at c + cidx[i].  When vspill is set, v1 and v2
+     * are NULL and the V data went to v_spill: V1 is the start of spilled
+     * region 0, V2 (when v2sz) is at v2off in spilled region v2region. */
+    uint32_t *cidx;
+    uint32_t cpoolsz;
+    int vspill;
+    int v2region;
+    uint32_t v2off;
 } lithogen_image;
 
 LITHOGEN_API lithogen_status lithogen_convert_mem(const char *zip_path,
